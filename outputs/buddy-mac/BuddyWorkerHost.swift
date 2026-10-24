@@ -2826,11 +2826,11 @@ import Darwin
         guard isCurrent(run) else { throw BuddyWorkerFailure(message: "This task stopped.") }
         return out
     }
-    /// Who reviews a change on a connected service: the person for a service that can charge money, else the team's supervisor when it can
-    /// answer now (not the agent's own request), else the person.
+    /// Who reviews a change on a connected service: the person for a service that can charge money, else the team's supervisor (not the
+    /// agent's own request), which it waits for while the supervisor's lane can't run, else the person.
     private func serviceRoute(_ service: BuddyConnectedService, job: [String: Any]) -> String {
         guard !service.charges, let lead = job["supervisorId"] as? String, !lead.isEmpty, lead != job["agentId"] as? String,
-              (try? state()).flatMap({ teamSupervisor($0) }) == lead, supervisor.status["online"] as? Bool == true else { return "user" }
+              (try? state()).flatMap({ teamSupervisor($0) }) == lead else { return "user" }
         return "supervisor"
     }
     /// The task waits for the person to connect a service (its address, how its key is sent, whether it can charge money, and the key, in the
@@ -3593,10 +3593,11 @@ import Darwin
     private func reviewRoute(_ verdict: BuddyCommandReview.Verdict, job: [String: Any]) -> String {
         // Only what is on the person's own list goes to them. Everything else is the team supervisor's: routine shapes, project scripts it
         // reads, and commands Buddy could not take apart (the supervisor reads the exact command). Forge's read-only process listings went to
-        // the user seven times on 23 Oct because Buddy could not read them. Without a supervisor online, the person decides.
+        // the user seven times on 23 Oct because Buddy could not read them. Without a team supervisor, the person decides. While the supervisor's
+        // lane can't run (a failing run, a disconnected provider, a used-up daily limit) the review waits for it, and the person is told once
+        // what is wrong with it: on 24 Oct a briefing too big for a ChatGPT run took supervision down and every review went to the person.
         guard !verdict.forPerson, let lead = job["supervisorId"] as? String, !lead.isEmpty, (try? state()).flatMap({ teamSupervisor($0) }) == lead else { return "user" }
         if verdict.routine, lead == job["agentId"] as? String { return "auto" }
-        guard supervisor.status["online"] as? Bool == true else { return "user" }
         return "supervisor"
     }
     /// What Buddy read in the command, kept on its review: for scripts also each one's place, size and hash (checked again before it runs) and

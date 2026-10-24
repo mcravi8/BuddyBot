@@ -22,7 +22,7 @@ import Foundation
 
     static let runTimeout: TimeInterval = 300, retryDelay: TimeInterval = 60
     /// After this long with no run answered, the user is told once that background supervision can't start.
-    static let failureNoticeAfter: TimeInterval = 30 * 60
+    static let failureNoticeAfter: TimeInterval = 10 * 60
     static let maxItems = 8, maxActions = 12, maxPresentations = 3, maxIdleRuns = 3, maxUnchanged = 3, briefingLimit = 120 * 1024
     /// The most a ChatGPT run's briefing may weigh: the app-server transport takes at most 100,000 characters for an internal run (bytes ≥ characters).
     static let chatgptBriefingLimit = 100_000
@@ -201,6 +201,9 @@ import Foundation
             guard let usable else {
                 dropGPT(); online = false; gated = true
                 lastError = "Connect \(own == "chatgpt" ? "ChatGPT or Claude" : "Claude or ChatGPT") in AI provider settings so \(supervisor.name) can supervise the team in the background."
+                // Reviews and questions wait for the supervisor meanwhile, so the person is told once why it can't run.
+                try? store.openDecision(workspace: workspace, id: "supervisor-provider:\(supervisor.id):\(BuddyBudget.day(now))", agent: supervisor.id, kind: "notice", title: "Background supervision can't run",
+                                        question: "\(supervisor.name) can't supervise the team: \(lastError) Results, questions and approvals wait for \(supervisor.name) meanwhile.", label: "Open settings", payload: ["agentId": supervisor.id], audience: "user")
                 return
             }
             if usable == "claude" { dropGPT() }
@@ -217,7 +220,7 @@ import Foundation
         if let room, room < 0.05 {
             online = false; gated = true; lastError = "\(supervisor.name)'s daily limit is used up."
             try? store.openDecision(workspace: workspace, id: "supervisor-limit:\(supervisor.id):\(BuddyBudget.day(now))", agent: supervisor.id, kind: "notice", title: "Supervision waits for tomorrow",
-                                    question: "\(supervisor.name)'s daily limit is used up; supervision continues tomorrow or when the limit is raised.", label: "Open settings", payload: ["agentId": supervisor.id], audience: "user")
+                                    question: "\(supervisor.name)'s daily limit is used up; supervision continues tomorrow or when the limit is raised. Results, questions and approvals wait for \(supervisor.name) meanwhile.", label: "Open settings", payload: ["agentId": supervisor.id], audience: "user")
             return
         }
         online = true
@@ -1159,7 +1162,7 @@ import Foundation
               let first = ISO8601DateFormatter().date(from: since), run.started.timeIntervalSince(first) >= Self.failureNoticeAfter else { return }
         let name = run.supervisor.name
         try? store.openDecision(workspace: run.workspace, id: "supervisor-failing:\(run.supervisor.id):\(since)", agent: run.supervisor.id, kind: "notice", title: "Background supervision can't start",
-                                question: "\(name) can't supervise the team in the background: \(Self.clause(reason)). Buddy keeps trying every minute; results and questions wait for \(name) meanwhile.",
+                                question: "\(name) can't supervise the team in the background: \(Self.clause(reason)). Buddy keeps trying every minute; results, questions and approvals wait for \(name) meanwhile.",
                                 label: "Open settings", payload: ["agentId": run.supervisor.id], audience: "user")
     }
 

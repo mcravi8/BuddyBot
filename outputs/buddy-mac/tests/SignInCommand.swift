@@ -449,7 +449,7 @@ import Security
         }
         try? models.set(workspace: workspace, agent: chief, selection: .init(provider: "claude", model: "claude-fixture"))
 
-        await section("with the supervisor lane offline (its daily limit used up), a routine command review falls back to the user") {
+        await section("with the supervisor lane offline (its daily limit used up), a command review waits for the supervisor, the user is told once why, and the supervisor answers it when the lane is back") {
             try await clearQueue()
             _ = try await worker(["operation": "limit", "scope": "agent", "agentId": chief, "amountUSD": 0.01])
             try await waitForLane(false)
@@ -457,11 +457,14 @@ import Security
             let waiting = try await poll(id, "the review waits") { pending($0) != nil }
             let review = pending(waiting) ?? [:]
             let open = try await decisions(id)
-            try require(review["route"] as? String == "user" && open.contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" }, "it is the user's: \(review["route"] ?? "-") \(open)")
-            try await answer(id, review, accept: true)
-            let done = try await poll(id, "it runs after the user's answer") { ["completed", "failed"].contains($0["status"] as? String ?? "") }
-            try require(done["status"] as? String == "completed" && reviews(done).first?["answeredBy"] as? String == "user", "the user approved it: \(reviews(done).first ?? [:])")
+            try require(review["route"] as? String == "supervisor" && !open.contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" },
+                        "it waits for the supervisor, not the user (24 Oct: with supervision down every review went to the user): \(review["route"] ?? "-") \(open)")
+            let told = ((try await status())["decisions"] as? [[String: Any]] ?? []).filter { $0["kind"] as? String == "notice" && $0["audience"] as? String == "user" && (($0["question"] as? String) ?? "").contains("approvals wait for") }
+            try require(told.count == 1, "the user is told once why supervision waits: \(told)")
             _ = try await worker(["operation": "limit", "scope": "agent", "agentId": chief, "amountUSD": NSNull()])
+            try await waitForLane(true)
+            let done = try await poll(id, "the supervisor answers it once the lane is back") { ["completed", "failed"].contains($0["status"] as? String ?? "") }
+            try require(done["status"] as? String == "completed" && reviews(done).first?["answeredBy"] as? String == "supervisor", "the supervisor approved it: \(reviews(done).first ?? [:])")
         }
 
         // MARK: no per-task limits
