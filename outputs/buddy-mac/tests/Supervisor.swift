@@ -175,6 +175,13 @@ import Foundation
         // export by hand. It is told such a script needs no desktop control and is its to approve.
         require(speaking.contains("needs no desktop control") && speaking.contains("that app's own folder counts as part of the project") && speaking.contains("never ask the user to open the app, turn on desktop control or export by hand"),
                 "the supervisor knows an Office export script is its to approve, and that the app's own folder is not outside the project for it")
+        // 24 Oct: Forge asked the user to install LibreOffice for a .doc Word saves itself, then Chief cancelled and restarted Forge ten times
+        // over a "missing review tool" Forge had all along. Chief looks for another way before anything reaches the user, decides how (not
+        // what) itself, and tells a coding task how a command comes to review instead of restarting it.
+        require(speaking.contains("A command review item with onUsersList is a request on the user's list") && speaking.contains("Only the user can approve it")
+                && speaking.contains("decline_command and say in reason exactly how") && speaking.contains("how is the team's") && speaking.contains("never forward it; objective is only for a change to what is delivered")
+                && speaking.contains("there is no separate review tool") && speaking.contains("never reassign or cancel it for that: rework it"),
+                "the supervisor screens the user's list, owns the how, and doesn't loop on a missing review tool")
         require(speaking.hasSuffix(BuddySupervisorLane.speaking) && speaking.contains(BuddyVoice.plain) && speaking.contains("forward_to_user's text opens with what you ask of the user") && speaking.contains("a short report for the user (see below)")
                 && speaking.contains("Everything else you write (reasons, answers, rework instructions, briefs) is for the team") && !speaking.contains("the files, the decisions you made, open issues"), "the supervisor writes to the user plainly and keeps exact details for the team")
         require((call["you"] as? [String: Any])?["name"] as? String == "Chief" && (call["authorization"] as? [String: Any])?["quote"] as? String == "get stage 1 done" && call["notices"] as? Bool == false, "the briefing names the supervisor, carries the user's authorization and leaves out the notices: \(call)")
@@ -846,6 +853,7 @@ import Foundation
         await tick(cancelled)
         require(calls(cancelled).count == runsSoFar, "nothing more waits for the supervisor")
         // Resuming a cancelled run is refused: it never resumes; the item stays open with the reason.
+        try cancelled.store.update(restartedRuns.first ?? "", ["status": "running", "attempt": 1, "executionRunID": UUID().uuidString])
         try cancelled.store.update(restartedRuns.first ?? "", ["status": "cancelled", "stopCause": "agent.cancel:\(vera)"])
         _ = try step(cancelled)
         try mode(cancelled, "resumeall")
@@ -853,6 +861,15 @@ import Foundation
         let refused17 = try itemState(cancelled, "cancelled:\(t1):2")
         require((calls(cancelled).last?["cancelled"] as? [String]) == ["Vera cancelled this run."] && refused17.state == "open" && refused17.refusal.contains("resume is only for work that stopped for a technical reason"),
                 "a resume of a cancelled run is refused, with the reason: \(refused17) \(calls(cancelled).last?["cancelled"] ?? "")")
+        // 24 Oct: Chief restarted Forge's Word export twenty times in twenty minutes, each ending the same way. With two restarts to the same
+        // teammate in the last hour, a third is refused, saying the how has to change.
+        let where17 = try rows(cancelled, "SELECT plan_id, stage_id FROM plan_decisions WHERE kind = 'reassign' AND task_id = ? LIMIT 1", [.text(t1)]).first
+        _ = try cancelled.plans.recordDecision(planId: where17?[0].string ?? "", kind: "reassign", by: chief, question: "", choice: forge, rationale: "Start it again.", stageId: where17?[1].string ?? "", taskId: t1, workerTaskId: "")
+        try mode(cancelled, "auto")
+        await tick(cancelled)
+        let again17 = try itemState(cancelled, "cancelled:\(t1):2")
+        require(again17.state == "open" && again17.refusal.contains("restarting it again changes nothing") && jobs(cancelled, "t1").count == 2,
+                "a third restart to the same teammate within the hour is refused, and nothing new starts: \(again17) \(jobs(cancelled, "t1").count)")
         let forUser17 = try cancelled.store.openDecisions(workspace: w).filter { $0["audience"] as? String == "user" }, escalations17 = try notices(cancelled, "escalation")
         require(forUser17.isEmpty && escalations17.isEmpty, "nothing reaches the user: \(forUser17) \(escalations17)")
         print("PASS: a plan task whose run the user (or a teammate) cancelled is a supervisor item that says who cancelled it; a cancelled run cannot be resumed, so the lane starts the task again with its assignee and Buddy makes exactly one new worker task for the next dispatch; nothing reaches the user")

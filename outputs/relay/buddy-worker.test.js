@@ -128,6 +128,11 @@ test('a task waiting only on the supervisor\u2019s review posts nothing in the c
  const mixed={...base,reviews:[{id:'r1',kind:'coding',status:'pending',route:'supervisor'},{id:'r2',kind:'coding',status:'pending',route:'user'}]};
  assert.equal(worker.deliverable(mixed),true,'one review that is the person\u2019s still shows');
  assert.equal(worker.deliverable({...base,reviews:[{id:'r2',kind:'coding',status:'pending',route:'user'}]}),true);
+ // A request on the person's list Chief looks at first ('screen') is Chief's until it passes it on: nothing in the chat yet, also for a paid service.
+ const screened={...base,reviews:[{id:'r3',kind:'coding',status:'pending',route:'screen'}]};
+ assert.equal(worker.supervisorWait(screened),true);assert.equal(worker.deliverable(screened),false,'nothing for the person while Chief looks for another way');
+ const paid={...base,progress:'Chief is looking for another way before this request to RunPod comes to you',reviews:[{id:'r4',kind:'service',status:'pending',route:'screen',request:{service:'RunPod',cost:{maxCostUSD:2.56}}}]};
+ assert.equal(worker.supervisorWait(paid),true);assert.doesNotMatch(worker.taskMessage(paid),/I need your OK/);
  assert.equal(worker.deliverable({...base,reviews:[{id:'r3',kind:'coding',status:'answered',route:'auto'}],status:'running'}),false,'Buddy\u2019s own approval never waits');
 });
 

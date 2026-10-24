@@ -93,6 +93,10 @@ import AppKit
             try require(brief.contains("Decisions: decide by default.") && brief.contains("Use buddy_checkpoint only when the user must act in person") && brief.contains("No supervisor is set for this team") && brief.contains("Time: the user is in the")
                         && brief.contains(project(buildID).path) && brief.contains("You are Codey") && !brief.contains("Claude"), "Buddy's coding brief with the decision policy, supervision line and clock, adapted for Codex: \(brief.prefix(300))")
             try require(brief.contains("~/Library/Containers/<its bundle id>/Data/Documents/") && brief.contains("never active document"), "it says how to use a sandboxed Mac app such as Word without a prompt nobody answers, and never on the user's own document")
+            // 24 Oct: Forge asked to install LibreOffice for a .doc Word saves itself, then said ten times it lacked the "native command review"
+            // Chief told it to use. It is told the user's list is a last resort, and that the review is its own escalated command.
+            try require(brief.contains(BuddyWebStep.lastResort) && brief.contains("sandbox_permissions set to require_escalated") && brief.contains("there is no separate review tool")
+                        && brief.contains("when a note says why or gives another way to the result, follow that"), "it finds another way before asking, and knows how a command comes to review")
             let turn = requests(buildID, "turn/start").first ?? [:], policy = turn["sandboxPolicy"] as? [String: Any] ?? [:]
             try require(brief.contains("End with your result. " + BuddyVoice.plain + " " + BuddyVoice.result), "the coding brief ends with a plain message to the person, then the details for the team")
             try require(policy["type"] as? String == "workspaceWrite" && policy["networkAccess"] as? Bool == false && turn["cwd"] as? String == project(buildID).path && turn["model"] as? String == "gpt-fixture-coder" && turn["effort"] as? String == "high",

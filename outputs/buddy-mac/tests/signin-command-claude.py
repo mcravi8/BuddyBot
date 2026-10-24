@@ -36,7 +36,10 @@ def supervise(c):
     log('supervisor', {'items': items, 'enum': c['outputSchema']['properties']['actions']['items']['properties']['do']['enum'], 'instructions': c['instructions']})
     actions = []
     for i in items:
-        if i.get('kind') == 'command_review':
+        if i.get('kind') == 'command_review' and i.get('onUsersList'):
+            # On the user's list: the supervisor can't approve it, so it passes it to the user with a note.
+            actions.append({'item': i['key'], 'do': 'forward_to_user', 'text': 'The task needs exactly this, and nothing on this Mac does it.'})
+        elif i.get('kind') == 'command_review':
             review = i.get('command') or {}
             if 'EDIT_AFTER_REVIEW' in review.get('reason', ''):
                 for script in review.get('scripts', []):

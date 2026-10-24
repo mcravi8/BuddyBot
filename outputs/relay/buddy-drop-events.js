@@ -37,7 +37,7 @@
     if(t.status==='completed')return handedOut?null:make(state,{...base,kind:'done',text:title});
     if(t.status==='waiting_review'){
       // A command review routed to the supervisor is its to answer; a sign-in is asked in the chat as a request of its own.
-      const r=W.pending(t).find(r=>r.route!=='supervisor'&&r.kind!=='authentication');if(!r)return null;
+      const r=W.pending(t).find(r=>r.route!=='supervisor'&&r.route!=='screen'&&r.kind!=='authentication');if(!r)return null;
       const text=r.kind==='checkpoint'?'Check the work':r.kind==='coding'||typeof r.tool?.arguments?.command==='string'?'Approve a command':W.isApproval(r)?'Approve a step':'Answer a question';
       return make(state,{...base,kind:'needs',text});
     }

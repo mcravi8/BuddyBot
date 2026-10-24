@@ -114,7 +114,8 @@ import Darwin
         func codingLines(_ kind: String) -> [[String: Any]] { lines(codingLog).filter { $0["kind"] as? String == kind }.compactMap { $0["value"] as? [String: Any] } }
         func results(_ tool: String) -> [[String: Any]] { codingLines("result").filter { $0["tool"] as? String == tool }.compactMap { $0["result"] as? [String: Any] } }
         func pending(_ id: String, kind: String) async throws -> [String: Any] {
-            let job = try await poll(id, "the task waits for a \(kind) review") { ($0["reviews"] as? [[String: Any]] ?? []).contains { $0["status"] as? String == "pending" && $0["kind"] as? String == kind } }
+            // One the supervisor looks at first (a request that can charge money) is waited for until it is passed on.
+            let job = try await poll(id, "the task waits for a \(kind) review") { ($0["reviews"] as? [[String: Any]] ?? []).contains { $0["status"] as? String == "pending" && $0["kind"] as? String == kind && $0["route"] as? String != "screen" } }
             return (job["reviews"] as? [[String: Any]] ?? []).last { $0["status"] as? String == "pending" && $0["kind"] as? String == kind } ?? [:]
         }
         func answer(_ id: String, _ review: [String: Any], _ accept: Bool) async throws { _ = try await worker(["operation": "review", "taskId": id, "id": review["id"] ?? "", "accept": accept, "cancel": !accept]) }
@@ -359,7 +360,8 @@ import Darwin
             try require(review["route"] as? String == "supervisor" && review["answeredBy"] as? String == "supervisor" && review["answeredByName"] as? String == "Chief" && review["status"] as? String == "completed", "Chief approved it: \(review)")
             let posted = requests("POST", "/notes/v1/items")
             try require(posted.count == 1 && posted[0]["auth"] as? Bool == true && (posted[0]["headerNames"] as? [String] ?? []).contains { $0.lowercased() == "x-api-key" }, "sent with the key in the header the user chose: \(posted)")
-            let shown = codingLines("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.first { $0["serviceRequest"] != nil }?["serviceRequest"] as? [String: Any] ?? [:]
+            // (Chief also saw the RunPod requests before: they can charge money, so it looked for another way before passing them on.)
+            let shown = codingLines("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.compactMap { $0["serviceRequest"] as? [String: Any] }.first { $0["service"] as? String == "Notes" } ?? [:]
             try require(shown["method"] as? String == "POST" && shown["path"] as? String == "/items" && shown["service"] as? String == "Notes", "Chief saw the exact request: \(shown)")
             let all = try await worker(["operation": "status"])
             try require(!((all["decisions"] as? [[String: Any]] ?? []).contains { $0["taskId"] as? String == id && $0["audience"] as? String == "user" }), "nothing went to the user")

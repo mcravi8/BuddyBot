@@ -54,7 +54,10 @@ def supervise(c):
     actions = []
     for i in brief.get('items', []):
         request = i.get('serviceRequest')
-        if i.get('kind') == 'command_review' and request:
+        if i.get('kind') == 'command_review' and i.get('onUsersList'):
+            # One that can charge money is the user's: the supervisor passes it on with a note.
+            actions.append({'item': i['key'], 'do': 'forward_to_user', 'text': 'The run needs this machine, and nothing on this Mac does it as fast.'})
+        elif i.get('kind') == 'command_review' and request:
             decline = 'DECLINE' in request.get('reason', '')
             actions.append({'item': i['key'], 'do': 'decline_command' if decline else 'approve_command', 'reason': 'Not what the task needs.' if decline else 'A note the task needs, on the user’s notes service.'})
         else:

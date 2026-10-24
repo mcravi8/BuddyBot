@@ -80,6 +80,8 @@ import Security
         }
         func reviews(_ job: [String: Any]) -> [[String: Any]] { job["reviews"] as? [[String: Any]] ?? [] }
         func pending(_ job: [String: Any]) -> [String: Any]? { reviews(job).last { $0["status"] as? String == "pending" } }
+        /// A review on the user's list once the supervisor has looked at it and passed it on (it is the supervisor's first while its lane runs).
+        func withUser(_ job: [String: Any]) -> Bool { pending(job).map { $0["route"] as? String == "user" } ?? false }
         func answer(_ id: String, _ review: [String: Any], accept: Bool) async throws {
             _ = try await worker(["operation": "review", "taskId": id, "id": review["id"] ?? "", "answers": ["command": [accept ? "Accept" : "Decline"]], "accept": accept])
         }
@@ -171,14 +173,15 @@ import Security
             try require(prompt.contains("Note from Buddy (not from the user):\n" + note), "Buddy's note is not presented as the user's words: \(prompt.suffix(500))")
         }
         await section("a credentialed command waits for the native review, which says in plain words that it signs in to WRDS; a declined review never reads the Keychain") {
-            let first = try await poll(signinID, "the credentialed command waits for review") { pending($0) != nil }
+            let first = try await poll(signinID, "the credentialed command waits for the user's review", withUser)
             let review = pending(first) ?? [:], tool = review["tool"] as? [String: Any] ?? [:], args = tool["arguments"] as? [String: Any] ?? [:]
             try require(review["kind"] as? String == "coding" && text(args["sign_in"]).hasPrefix("This command signs in to WRDS with your saved sign-in") && text(args["command"]) == envCommand,
                         "the review card: \(tool)")
-            try require(review["route"] as? String == "user", "a command with a sign-in is never the supervisor's: \(review["route"] ?? "-")")
+            try require(review["route"] as? String == "user" && review["screenedBy"] as? String == "Chief" && text(review["screenNote"]).contains("nothing on this Mac"),
+                        "a command with a sign-in is never the supervisor's to approve: Chief looked first and passed it on, with its note: \(review)")
             try require(saved.reads == 0 && !FileManager.default.fileExists(atPath: project(signinID).appendingPathComponent("never.txt").path), "nothing was read before the review: \(saved.reads)")
             try await answer(signinID, review, accept: false)
-            let second = try await poll(signinID, "the agent asks once more after the decline") { job in reviews(job).count == 2 && pending(job) != nil }
+            let second = try await poll(signinID, "the agent asks once more after the decline") { job in reviews(job).count == 2 && withUser(job) }
             try require(saved.reads == 0, "a declined review never reads the Keychain: \(saved.reads) reads")
             let declined = reviews(second).first ?? [:]
             try require(declined["status"] as? String == "cancelled" && declined["answeredBy"] as? String == "user" && !text(declined["answeredAt"]).isEmpty, "the declined review records who answered: \(declined)")
@@ -242,7 +245,7 @@ import Security
         await section("a Codex coding thread gets buddy_coding_command with credential, runs the signed-in command through Buddy's shell after review, and keeps its own shell for the rest") {
             try await clearQueue()
             let id = try await start("CODEX_SIGNIN: run the WRDS extract.", as: forge, request: "codex-signin")
-            let waiting = try await poll(id, "the Codex credentialed command waits for review") { pending($0) != nil }
+            let waiting = try await poll(id, "the Codex credentialed command waits for the user's review", withUser)
             try require(waiting["signInGrants"] == nil && reviews(waiting).count == 1 && pending(waiting)?["credential"] as? String == "wrds" && pending(waiting)?["route"] as? String == "user",
                         "a new task asks again, once: the OK given in another task does not carry over: \(reviews(waiting))")
             let thread = codexLog(id).filter { $0["kind"] as? String == "request" }.compactMap { $0["value"] as? [String: Any] }.first { $0["method"] as? String == "thread/start" }?["params"] as? [String: Any] ?? [:]
@@ -303,7 +306,7 @@ import Security
             try require(FileManager.default.fileExists(atPath: project(id).appendingPathComponent("verification/stage3_public_inputs/raw/SPX_CBOE.csv").path), "the approved command ran")
             let every = try everyDecision(id)
             try require(every.contains { $0.kind == "command_review" && $0.audience == "supervisor" } && !every.contains { $0.audience == "user" }, "it went to the supervisor and never to the user: \(every)")
-            let shown = fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.first { $0["kind"] as? String == "command_review" } ?? [:], what = shown["command"] as? [String: Any] ?? [:]
+            let shown = fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.first { $0["kind"] as? String == "command_review" && json($0).contains("cdn.cboe.com") } ?? [:], what = shown["command"] as? [String: Any] ?? [:]
             try require(text(what["command"]).contains("https://cdn.cboe.com/api/global/us_indices/daily_prices/SPX_History.csv") && (what["hosts"] as? [String]) == ["cdn.cboe.com"]
                         && (what["writes"] as? [String]) == ["verification/stage3_public_inputs/raw/SPX_CBOE.csv"] && text(what["reason"]).contains("SPX history"), "Chief saw the exact command, host, where it writes and why: \(shown)")
             let enumerated = fixture("supervisor").first?["enum"] as? [String] ?? []
@@ -324,17 +327,20 @@ import Security
             let shown = fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.last { $0["kind"] as? String == "command_review" } ?? [:], what = shown["command"] as? [String: Any] ?? [:]
             try require(text(what["command"]).contains("make report") && what["kind"] as? String == "unclear", "Chief saw the exact command, marked as one Buddy could not read: \(shown)")
         }
-        await section("an upload is sensitive: it stays with the user, and the supervisor never sees it") {
+        await section("an upload is sensitive: Chief looks for another way first and, finding none, passes it to the user with its note; only the user can approve it") {
             try await clearQueue()
+            try await waitForLane(true)
             let id = try await start("CODEX_UPLOAD: share the results.", as: forge, request: "upload")
-            let waiting = try await poll(id, "the upload waits for the user") { pending($0) != nil }
+            let waiting = try await poll(id, "the upload waits for the user", withUser)
             let review = pending(waiting) ?? [:]
             let open = try await decisions(id)
-            try require(review["route"] as? String == "user" && open.contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" }, "the user's review: \(review["route"] ?? "-") \(open)")
+            try require(review["route"] as? String == "user" && review["screenedBy"] as? String == "Chief" && open.contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" && text($0["question"]).contains("Chief: The task needs exactly this") },
+                        "the user's review, with Chief's note: \(review["route"] ?? "-") \(open)")
             try await answer(id, review, accept: false)
             let done = try await poll(id, "the declined upload ends") { ["completed", "failed"].contains($0["status"] as? String ?? "") }
             try require(!FileManager.default.fileExists(atPath: project(id).appendingPathComponent("uploaded.txt").path) && reviews(done).first?["answeredBy"] as? String == "user", "it did not run; the user answered")
-            try require(!fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.contains { $0["workerTaskId"] as? String == id || json($0).contains("upload.example.org") }, "Chief never saw it")
+            let shown = fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.first { json($0).contains("upload.example.org") } ?? [:]
+            try require(text(shown["onUsersList"]).contains("send") && text(shown["expected"]) == "decline_command with another way, or forward_to_user", "Chief was told it is on the user's list and what it may do: \(shown)")
         }
         await section("a Claude coding command with network that is routine goes to the supervisor too, who can decline it; it does not run") {
             try await clearQueue()
@@ -446,6 +452,49 @@ import Security
             let done = try await poll(id, "the declined command ends", terminal)
             try require(reviews(done).first?["answeredBy"] as? String == "user" && codexLog(id).filter { $0["kind"] as? String == "decision" }.compactMap { $0["value"] as? String } == ["decline"], "the user declined it; it did not run")
             try require(!shownToSupervisor().contains { json($0).contains("CODEX_SCRIPT_SECRET") }, "the supervisor never saw it")
+        }
+        // MARK: requests on the user's list: the supervisor looks for another way first
+
+        await section("Forge's request to install LibreOffice (24 Oct 2026) goes to Chief first, with what this Mac has; Chief declines it with another way, Forge hears why in its running turn and carries on, and the user is never asked") {
+            try await clearQueue()
+            try await waitForLane(true)
+            let id = try await start("CODEX_INSTALL ANOTHER_WAY: make the Word 97-2003 copy of the report.", as: forge, request: "install-another-way")
+            let done = try await poll(id, "Forge carries on another way", seconds: 60, terminal)
+            try require(done["status"] as? String == "completed" && FileManager.default.fileExists(atPath: project(id).appendingPathComponent("report.doc").path), "Forge finished another way: \(done["status"] ?? "") \(done["progress"] ?? "")")
+            let review = reviews(done).first ?? [:]
+            try require(review["route"] as? String == "screen" && review["status"] as? String == "cancelled" && review["answeredBy"] as? String == "supervisor" && review["answeredByName"] as? String == "Chief"
+                        && text(review["answerReason"]).contains("Microsoft Word is already on this Mac"), "Chief declined it, saying how instead: \(review)")
+            let steered = codexLog(id).filter { $0["kind"] as? String == "request" }.compactMap { $0["value"] as? [String: Any] }.filter { $0["method"] as? String == "turn/steer" }
+            let said = text(((steered.first?["params"] as? [String: Any])?["input"] as? [[String: Any]])?.first?["text"])
+            try require(steered.count == 1 && said.hasPrefix("[Buddy] Chief declined your command `/bin/zsh -lc 'brew install --cask libreoffice'`: Microsoft Word is already on this Mac"),
+                        "Forge heard why in its running turn: \(steered)")
+            try require(codexLog(id).filter { $0["kind"] as? String == "decision" }.compactMap { $0["value"] as? String } == ["decline"] && codexLog(id).contains { $0["kind"] as? String == "steered" }, "the install never ran, and Forge went on")
+            let every = try everyDecision(id)
+            try require(every.contains { $0.kind == "command_review" && $0.audience == "supervisor" } && !every.contains { $0.audience == "user" }, "it never reached the user: \(every)")
+            let shown = shownToSupervisor().first { json($0).contains("brew install --cask libreoffice") } ?? [:], mac = shown["thisMac"] as? [String: Any] ?? [:]
+            try require(text(shown["onUsersList"]) == BuddyCommandReview.changesMac && text(shown["expected"]) == "decline_command with another way, or forward_to_user"
+                        && !(mac["apps"] as? [String] ?? []).isEmpty && mac["homebrew"] is [String] && (shown["command"] as? [String: Any])?["routine"] == nil,
+                        "Chief was told why it is on the user's list and what this Mac has: \(shown["onUsersList"] ?? "-") \(shown["expected"] ?? "-") \(mac.keys.sorted())")
+        }
+        await section("a decline whose turn already ended is kept for the agent's next attempt") {
+            try await clearQueue()
+            try await waitForLane(true)
+            let id = try await start("CODEX_INSTALL_ENDS ANOTHER_WAY: make the Word 97-2003 copy of the report.", as: forge, request: "install-ends")
+            let done = try await poll(id, "the attempt ends", seconds: 60, terminal)
+            let kept = try await poll(id, "the note is kept") { ($0["updates"] as? [String] ?? []).contains { $0.hasPrefix("[Buddy] Chief declined your command") } }
+            try require(done["status"] as? String == "completed" && (kept["updates"] as? [String] ?? []).contains { $0.contains("Microsoft Word is already on this Mac") }, "the note waits for the next attempt: \(kept["updates"] ?? [])")
+        }
+        await section("Chief can never approve a request on the user's list: Buddy refuses it, the command does not run, and one Chief has not handled in time goes to the user as it is") {
+            try await clearQueue()
+            try await waitForLane(true)
+            let wait = BuddyWorkerHost.screenWait; BuddyWorkerHost.screenWait = 3; defer { BuddyWorkerHost.screenWait = wait }
+            let id = try await start("CODEX_INSTALL APPROVE_ANYWAY: make the Word 97-2003 copy of the report.", as: forge, request: "install-approve")
+            let waiting = try await poll(id, "the request reaches the user after the wait", seconds: 60, withUser)
+            let review = pending(waiting) ?? [:]
+            try require(review["screenedBy"] == nil && review["answeredBy"] == nil && codexLog(id).filter { $0["kind"] as? String == "decision" }.isEmpty, "Chief's approval was refused and nothing ran: \(review)")
+            try require(try await decisions(id).contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" }, "the user has it")
+            try await answer(id, review, accept: false)
+            _ = try await poll(id, "the declined request ends", terminal)
         }
         try? models.set(workspace: workspace, agent: chief, selection: .init(provider: "claude", model: "claude-fixture"))
 

@@ -393,6 +393,8 @@ enum BuddyWebStep {
     static let pathRefusal = "Give path: where in that folder the user saves the file, relative and with the file name (for example stages/S01/sources/article.pdf). Nothing was asked of the user yet."
     /// Sandboxed Mac apps (Word, Excel, PowerPoint) can't open a file outside their own folder without a prompt on the user's screen: on 23 Oct
     /// Forge's Word export of the report hung on "Grant File Access" for hours while the team kept adding tasks to get a native Word check.
+    /// What every coding agent does before asking for anything on the person's list: find another way with what is already here.
+    static let lastResort = "Anything on the user's list (installing or changing anything on this Mac, sudo, signing in, reading secrets, sending data out, writing outside the project, spending money) is a last resort. First find a way with what is already here: the project and its packages, and the apps and tools already on this Mac (look with ls /Applications, which <tool>, or sdef <app> for what an app can do by AppleScript; an installed app can often do the job itself, driven by a project script). When the brief names a tool this Mac lacks, reach the same result with what is here, keep every check it asks for, and say so in your result; ask your supervisor with buddy_request_decision only when the result itself would differ. Ask for something on the list only when there is no other way, and say in its reason why there is none. Your supervisor reads such a request first and may answer with another way: take it."
     static let macAppsGuidance = "Sandboxed Mac apps (Microsoft Word, Excel, PowerPoint and most App Store apps) can't open a file outside their own folder without a permission prompt on the user's screen, so a command that asks them to hangs until it is stopped. To check or export a document with such an app, write a short project script that copies the file into the app's own folder (~/Library/Containers/<its bundle id>/Data/Documents/buddy-<a name of yours>/; Word's bundle id is com.microsoft.Word), opens it there with open -g -a \"<App>\" <file>, waits until the app lists that document by its file name, drives the app by AppleScript referring to the document by that name (never active document: it may be one of the user's own open documents), exports (Word: save as <document> file name <path in that folder> file format format PDF), closes only that document without saving, and copies the result back into your project; then run the script (it goes to review). Never touch a document or window of the user's."
     /// The line every coding brief carries about a site that blocks a download.
     static let codingGuidance = "Your own commands can't use Buddy's Chrome or anything signed in there, but buddy_browser_fetch can: when a website blocks a download (a CAPTCHA, a sign-in, a paywall the user has access to, curl getting a web page instead of the file), call buddy_browser_fetch with url (the file's own address, such as the PDF link) and saveAs (where in your project, with the file name). Buddy's Chrome opens it with the user's sign-ins and saves the file into your project, and you get its path, size, type and sha256; then use it with your own file tools. If the site shows a CAPTCHA, a sign-in or another check, Buddy asks the user to finish it in Buddy's Chrome and fetches the file again when they press Done: end this attempt then, and you are resumed with a note naming the saved file. Never ask the user to sign in, solve a CAPTCHA or download a file by hand for your commands. Only if buddy_browser_fetch itself says it can't get the file, call buddy_checkpoint with need file, url, folderId (a connected folder from buddy_list_folders) and path, then end the attempt; when you are resumed, check the file with buddy_list_files and bring it in with buddy_copy_into_project. If you need only one fact from a page, ask for exactly that fact with buddy_request_decision instead."
@@ -1200,7 +1202,7 @@ struct BuddyAttempt {
                 let site = (review["origin"] as? String).flatMap { URL(string: $0)?.host } ?? "a website", reset = review["purpose"] as? String == "reset"
                 out.append(DecisionSpec(id: "review:" + reviewID, kind: "signin", title: reset ? "Reset your password on \(site)?" : "Create an account on \(site)?",
                                         question: reset ? "Answer in the chat: Reset password or Don’t." : "Answer in the chat: Create account or Don’t. Buddy never pays or starts a paid trial.", label: "Open chat", payload: ["taskId": id, "reviewId": reviewID]))
-            case "pending" where ["service", "upload"].contains(review["kind"] as? String ?? "") && review["route"] as? String != "supervisor":
+            case "pending" where ["service", "upload"].contains(review["kind"] as? String ?? "") && !["supervisor", "screen"].contains(review["route"] as? String ?? ""):
                 // A change on a connected service (money, when the person said it can charge it), or files leaving the Mac for a machine: the
                 // person's, with what it costs at most by the agent's estimate.
                 if review["kind"] as? String == "upload" {
@@ -1212,12 +1214,13 @@ struct BuddyAttempt {
                 let r = review["request"] as? [String: Any] ?? [:], service = r["service"] as? String ?? "a service", cost = r["cost"] as? [String: Any]
                 let most = (cost?["maxCostUSD"] as? Double).map { "? At most " + String(format: "$%.2f", $0) } ?? "?"
                 out.append(DecisionSpec(id: "review:" + reviewID, kind: "review", title: "Allow a request to \(service)\(most)",
-                                        question: "\(r["agent"] as? String ?? "An agent") wants to send \(r["method"] as? String ?? "") \(r["path"] as? String ?? "") to \(service)" + (r["charges"] as? Bool == true ? ", which can charge you money" : "") + ". Approve or Disapprove in the task.",
+                                        question: "\(r["agent"] as? String ?? "An agent") wants to send \(r["method"] as? String ?? "") \(r["path"] as? String ?? "") to \(service)" + (r["charges"] as? Bool == true ? ", which can charge you money" : "") + ". Approve or Disapprove in the task." + Self.screened(review),
                                         label: "Review", payload: ["taskId": id, "reviewId": reviewID]))
             case "pending":
                 // A coding command Buddy judged routine is the team supervisor's to answer (`command_review`); the page shows it to the person
                 // only when the supervisor lane is not answering.
-                if review["route"] as? String == "supervisor", ["coding", "service"].contains(review["kind"] as? String ?? "") {
+                // One on the person's list the supervisor looks at first (`screen`) is its too, until it passes it on.
+                if ["supervisor", "screen"].contains(review["route"] as? String ?? ""), ["coding", "service"].contains(review["kind"] as? String ?? "") {
                     out.append(DecisionSpec(id: "review:" + reviewID, kind: "command_review", title: "Review: \(tool)", question: "Allow this exact command? " + ((review["assessment"] as? [String: Any])?["reason"] as? String ?? ""),
                                             label: "Review", payload: ["taskId": id, "reviewId": reviewID], audience: "supervisor"))
                     continue
@@ -1228,7 +1231,7 @@ struct BuddyAttempt {
                 var payload: [String: Any] = ["taskId": id, "reviewId": reviewID]
                 if auth, let signin = review["signinId"] as? String { payload["signinId"] = signin }
                 out.append(DecisionSpec(id: "review:" + reviewID, kind: auth ? "signin" : "review", title: auth ? (site.map { "Sign in to \($0)" } ?? "Sign-in needs your choice") : check ? "Check the work: \(title)" : "Review: \(tool)",
-                                        question: auth ? "Choose how to sign in to \(review["origin"] as? String ?? "this site") in the chat: type your password there, or open Chrome." : check ? (ask.isEmpty ? "Look at the work and say whether to continue." : ask) : "Allow this exact operation?", label: auth ? "Open chat" : check ? "Check work" : "Review", payload: payload))
+                                        question: auth ? "Choose how to sign in to \(review["origin"] as? String ?? "this site") in the chat: type your password there, or open Chrome." : check ? (ask.isEmpty ? "Look at the work and say whether to continue." : ask) : "Allow this exact operation?" + Self.screened(review), label: auth ? "Open chat" : check ? "Check work" : "Review", payload: payload))
             case "uncertain":
                 out.append(DecisionSpec(id: "action:" + reviewID + ":unconfirmed", kind: "unconfirmed", title: "Check whether “\(tool)” went through",
                                         question: "Buddy stopped before it could confirm this. Look at the site or service, then say whether it went through.", label: "Check action", payload: ["taskId": id, "reviewId": reviewID]))
@@ -1289,6 +1292,11 @@ struct BuddyAttempt {
         }
         return out
     }
+    /// The supervisor's note on a request it passed to the person (why there is no other way), for the person's card.
+    static func screened(_ review: [String: Any]) -> String {
+        guard let note = review["screenNote"] as? String, !note.isEmpty else { return "" }
+        return " \(review["screenedBy"] as? String ?? "The supervisor"): \(note)"
+    }
     /// Kinds kept equal to a task's state. `allowance` is no longer opened, but stays here so rows left from before are still resolved.
     private static let derivedKinds = "('review', 'signin', 'waiting', 'allowance', 'stopped', 'unconfirmed', 'limit', 'paused', 'result', 'credential', 'mfa', 'command_review', 'step', 'lease')"
     /// Keeps the open blockers of one task equal to what its state implies, in the transaction that saves it: new ones are opened, ones whose cause
@@ -1302,8 +1310,14 @@ struct BuddyAttempt {
                                    [.text(id), .text(task["workspace"] as? String ?? ""), .text(task["agentId"] as? String ?? ""), .text(taskID), .text(spec.kind), .text(spec.title), .text(spec.question), .text(spec.label), .text((try? BuddyOperationsDB.encode(spec.payload)) ?? "{}"), .text(stamp()), .text(spec.audience)])
             if added > 0 { try appendEvent("decision.opened", task: task, attempt: task["attempt"] as? Int, cause: spec.kind, payload: ["id": id, "kind": spec.kind], in: db) }
         }
-        // The same blocker whose audience has changed (a supervisor was named, a question was routed) moves in place.
-        for (id, spec) in desired { if let current = open[id], current != spec.audience { try db.run("UPDATE decisions SET audience = ? WHERE id = ?", [.text(spec.audience), .text(id)]) } }
+        // The same blocker whose audience has changed (a supervisor was named, a question was routed, a request the supervisor passed to the
+        // person) moves in place, with the words its new audience reads.
+        for (id, spec) in desired {
+            if let current = open[id], current != spec.audience {
+                try db.run("UPDATE decisions SET audience = ?, kind = ?, title = ?, question = ?, label = ?, payload = ? WHERE id = ?",
+                           [.text(spec.audience), .text(spec.kind), .text(spec.title), .text(spec.question), .text(spec.label), .text((try? BuddyOperationsDB.encode(spec.payload)) ?? "{}"), .text(id)])
+            }
+        }
         // A step's words follow what it says now (one saved before steps named their page says its site once Buddy finds the page).
         for (id, spec) in desired where open[id] != nil && spec.kind == "step" {
             try db.run("UPDATE decisions SET title = ?, question = ? WHERE id = ? AND (title != ? OR question != ?)", [.text(spec.title), .text(spec.question), .text(id), .text(spec.title), .text(spec.question)])
