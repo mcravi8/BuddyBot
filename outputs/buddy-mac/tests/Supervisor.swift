@@ -435,8 +435,8 @@ import Foundation
         for _ in 0..<11 { await tick(offline) }
         let cant = try cantStart()
         require(calls(offline).count == 16 && cant.count == 1 && cant.first?["audience"] as? String == "user" && cant.first?["kind"] as? String == "notice"
-                && cant.first?["question"] as? String == "Chief can't supervise the team in the background: Subprocess initialization did not complete within 30000ms — check authentication and network connectivity. Buddy keeps trying every minute; results and questions wait for Chief meanwhile.",
-                "after 30 minutes of failures the user gets one plain notice with the reason: \(cant)")
+                && cant.first?["question"] as? String == "Chief can't supervise the team in the background: Subprocess initialization did not complete within 30000ms — check authentication and network connectivity. Buddy keeps trying every minute; results, questions and approvals wait for Chief meanwhile.",
+                "after failing a while the user gets one plain notice with the reason, saying approvals wait for Chief too: \(cant)")
         for _ in 0..<3 { await tick(offline) }
         require(try cantStart().count == 1 && (try notices(offline, "stuck")).isEmpty && (try itemState(offline, offlineKey)).state == "open", "the notice is not repeated and still nothing is stuck")
         try mode(offline, "auto")
@@ -672,13 +672,13 @@ import Foundation
         require(try calls(gptFail).count == 7 && gptFail.lane.status["lastError"] as? String == "The ChatGPT connection closed. Try again to reconnect." && gptFail.lane.status["online"] as? Bool == false && (try itemState(gptFail, failKey)).presented == 0,
                 "so is the app-server going away half way through the run: \(gptFail.lane.status)")
         func gptCantStart() throws -> [[String: Any]] { (try gptFail.store.openDecisions(workspace: w)).filter { $0["title"] as? String == "Background supervision can't start" } }
-        require(try gptCantStart().isEmpty, "fourteen minutes of failures do not bother the user yet")
+        require(try gptCantStart().count == 1, "after ten minutes of failures the user is told once, so reviews that wait for Chief are never a mystery")
         try mode(gptFail, "fail")
         for _ in 0..<9 { await tick(gptFail) }
         let gptCant = try gptCantStart()
         require(calls(gptFail).count == 16 && gptCant.count == 1 && gptCant.first?["audience"] as? String == "user"
-                && gptCant.first?["question"] as? String == "Chief can't supervise the team in the background: ChatGPT hit an error before answering. Buddy keeps trying every minute; results and questions wait for Chief meanwhile.",
-                "after 30 minutes of failures the user gets one plain notice with the reason: \(calls(gptFail).count) \(gptCant)")
+                && (gptCant.first?["question"] as? String ?? "").hasPrefix("Chief can't supervise the team in the background: ") && (gptCant.first?["question"] as? String ?? "").hasSuffix("Buddy keeps trying every minute; results, questions and approvals wait for Chief meanwhile."),
+                "the user still has exactly one plain notice with the reason: \(calls(gptFail).count) \(gptCant)")
         require(try notices(gptFail, "stuck").isEmpty && (try itemState(gptFail, failKey)).state == "open", "and still nothing is stuck")
         try mode(gptFail, "auto")
         await tick(gptFail)
