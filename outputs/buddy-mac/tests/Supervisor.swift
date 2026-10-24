@@ -171,6 +171,9 @@ import Foundation
         require(call["policy"] as? Bool == true && call["supervises"] as? Bool == true && call["text"] as? Bool == true, "the instructions are the decision policy, the supervision line and the supervisor text")
         // What the person reads of the supervisor's work is plain: its questions and stage reports, not the team's shorthand.
         let speaking = BuddySupervisorLane.supervisorText(name: "Chief")
+        // 24 Oct: Chief declined Forge's Word export as "automates a Mac app despite desktop control being disabled" and asked the user to
+        // export by hand. It is told such a script needs no desktop control and is its to approve.
+        require(speaking.contains("needs no desktop control") && speaking.contains("never ask the user to open the app and export by hand"), "the supervisor knows an Office export script is its to approve")
         require(speaking.hasSuffix(BuddySupervisorLane.speaking) && speaking.contains(BuddyVoice.plain) && speaking.contains("forward_to_user's text opens with what you ask of the user") && speaking.contains("a short report for the user (see below)")
                 && speaking.contains("Everything else you write (reasons, answers, rework instructions, briefs) is for the team") && !speaking.contains("the files, the decisions you made, open issues"), "the supervisor writes to the user plainly and keeps exact details for the team")
         require((call["you"] as? [String: Any])?["name"] as? String == "Chief" && (call["authorization"] as? [String: Any])?["quote"] as? String == "get stage 1 done" && call["notices"] as? Bool == false, "the briefing names the supervisor, carries the user's authorization and leaves out the notices: \(call)")
