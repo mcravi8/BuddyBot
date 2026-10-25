@@ -327,7 +327,7 @@ import Darwin
             let args=request["arguments"] as? [String:Any] ?? [:],actor=request["actorId"] as? String,state=try state()
             var reply=try monitor.handle(args,state:state,jobs:store.jobs,actor:actor,authorizedText:request["authorizedText"] as? String ?? "")
             // The supervisor and managers also see the team plans they look after.
-            if let actor,(args["action"] as? String ?? "status")=="status",let overseen=overseenPlans(actor,state:state,workspace:current) {reply["plans"]=overseen}
+            if let actor,(args["action"] as? String ?? "status")=="status",let overseen=overseenPlans(actor,state:state,workspace:current) {reply["plans"]=overseen.map(Self.agentPlan);reply=Self.fitForAgent(reply)}
             return reply
         }
         if operation=="plan" {return try await planOperation(request,workspace:current)}
@@ -831,15 +831,17 @@ import Darwin
         func leads(_ who: String?) -> Bool { guard let who else { return true }; return who == supervisor || who == manager || who == projectChief }
         func existing() throws -> [String: Any] { guard let found else { throw BuddyPlanFailure(message: "This group has no open plan. Propose one first.", code: "not_found") }; return found }
         // Replies carry the plan summary (contract C-7) with live task state, never the task briefs.
+        // An agent gets the plan in a form it can open (`agentPlan`); the page gets all of it.
         func reply(_ id: String, _ receipt: [String: Any]) throws -> [String: Any] {
             let shown = try plans.summary(workspace: current, jobs: store.jobs, names: names).first { $0["id"] as? String == id }
-            return ["plan": shown.map { $0 as Any } ?? NSNull(), "receipt": receipt.merging(["action": action, "planId": id, "at": ISO8601DateFormatter().string(from: Date())]) { $1 }]
+            let out: [String: Any] = ["plan": shown.map { actor == nil ? $0 : Self.agentPlan($0) as Any } ?? NSNull(), "receipt": receipt.merging(["action": action, "planId": id, "at": ISO8601DateFormatter().string(from: Date())]) { $1 }]
+            return actor == nil ? out : Self.fitForAgent(out)
         }
         switch action {
         case "get":
             if let found {
                 if let actor { guard leads(actor) || members.contains(actor) || found["supervisorId"] as? String == actor else { throw refused("Only the group's members, its manager and the team's supervisor read its plan.") } }
-                return ["plan": found]
+                return actor == nil ? ["plan": found] : Self.fitForAgent(["plan": Self.agentPlan(found)])
             }
             if !groupID.isEmpty { return ["plan": NSNull()] }
             guard let actor else { return ["plans": summaries] }
@@ -847,7 +849,7 @@ import Darwin
             let mine = summaries.filter { plan in actor == supervisor || plan["supervisorId"] as? String == actor || groups.contains { g in
                 g["id"] as? String == plan["groupId"] as? String && ((g["members"] as? [String] ?? []).contains(actor) || g["managedBy"] as? String == actor) } }
             let led = mine.filter { $0["supervisorId"] as? String == actor && BuddyPlanStore.live.contains($0["status"] as? String ?? "") }
-            return ["plans": mine, "plan": led.count == 1 ? led[0] : NSNull()]
+            return Self.fitForAgent(["plans": mine.map(Self.agentPlan), "plan": led.count == 1 ? Self.agentPlan(led[0]) : NSNull()])
         case "propose":
             guard leads(actor) else { throw refused("Only the team's supervisor or the group's manager proposes its plan.") }
             guard group != nil else { throw BuddyPlanFailure(message: "Choose the group this plan is for.", code: "invalid_input") }
@@ -926,6 +928,40 @@ import Darwin
         default:
             throw BuddyPlanFailure(message: "Choose get, propose, authorize, add_request, revise, answer or stop.", code: "invalid_input")
         }
+    }
+    /// A plan as an agent's tool reply carries it: a finished stage as one line (its tasks are done), an open stage in full with each task's
+    /// result summary short, a stage's request from the user cut to its start (every task's brief and the supervisor's planning carry it whole),
+    /// and the latest notices. On 25 Oct the whole plan, eight stages and over a hundred tasks, was more than Chief could open, so Chief could
+    /// not see that the stage it had just added was saved and asked the user to check.
+    static func agentPlan(_ plan: [String: Any]) -> [String: Any] {
+        func cut(_ text: String, _ limit: Int) -> String { text.count > limit ? String(text.prefix(limit - 1)) + "…" : text }
+        var out = plan
+        out["stages"] = (plan["stages"] as? [[String: Any]] ?? []).map { stage -> [String: Any] in
+            let tasks = stage["tasks"] as? [[String: Any]] ?? []
+            if ["done", "superseded"].contains(stage["status"] as? String ?? "") {
+                return ["id": stage["id"] ?? "", "n": stage["n"] ?? 0, "title": stage["title"] ?? "", "status": stage["status"] ?? "", "tasks": tasks.count]
+            }
+            var shown = stage
+            if let request = shown["request"] as? String, request.count > 1500 { shown["request"] = cut(request, 1500) + " (the whole request is kept with the stage, and every task's brief carries it)" }
+            shown["tasks"] = tasks.map { task -> [String: Any] in
+                var row = task; row.removeValue(forKey: "brief")
+                if let summary = row["resultSummary"] as? String { row["resultSummary"] = cut(summary, 400) }
+                return row
+            }
+            return shown
+        }
+        if let notices = plan["notices"] as? [[String: Any]] { out["notices"] = notices.suffix(8).map { notice -> [String: Any] in var n = notice; if let text = n["text"] as? String { n["text"] = cut(text, 600) }; return n } }
+        return out
+    }
+    /// A tool reply for an agent, trimmed (longest texts first, each marked) to what a model can open.
+    static func fitForAgent(_ value: [String: Any]) -> [String: Any] {
+        func size(_ v: [String: Any]) -> Int { (try? JSONSerialization.data(withJSONObject: v).count) ?? Int.max }
+        var out = value
+        for _ in 0..<400 where size(out) > BuddyTeamMonitor.toolResultLimit {
+            guard let shorter = BuddySupervisorLane.halvingLongest(out) as? [String: Any] else { break }
+            out = shorter
+        }
+        return out
     }
     /// A plan edit to a task already handed out reaches the work it changes: the new brief, deliverable or title is added to the worker task's
     /// instructions, and a task that only waits for its own command on a rented machine continues now to act on it. The receipt says where each

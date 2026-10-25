@@ -197,6 +197,22 @@ import Foundation
         require(try BuddyTeamRequest.from(workspace: managedState, payload: ["runId": supervised.runId, "groupId": supervised.groupId, "key": supervised.key, "text": "go"]).supervisorId == nil, "a manager who is not in the group does not supervise its reply")
         print("PASS: the group's supervisor answers before the teammates it directs, and they receive its decision")
 
+        // 25 Oct: Chief put the user's cleanup into the team plan, and Forge and Vera then each answered “nothing is done yet”. Once the supervisor
+        // has put the request into the plan during its turn, the teammates get it there as plan tasks, and their turns in this reply are dropped.
+        var planned = request(members: omori, text: "Last cleanup on be8e8775, then stop."); planned.supervisorId = "chief"
+        let (planFake, planTeam) = fixture(); _ = try planTeam.send(planned); await wait { planFake.calls.count == 1 }
+        planFake.complete(0, text: String(data: try JSONEncoder().encode(parallel), encoding: .utf8)!)
+        await wait { planFake.calls.count == 2 }
+        planTeam.tookIntoPlan(planned.runId)
+        planFake.complete(1, text: "I've added your cleanup to the plan as the final stage; Forge does it and Vera checks it.")
+        await wait { planTeam.snapshots()[0]["status"] as? String == "completed" }
+        let plannedEntries = ((planTeam.snapshots()[0]["team"] as? [String: Any])?["entries"] as? [[String: Any]] ?? []).compactMap { $0["agentId"] as? String }
+        require(planFake.calls.count == 2 && plannedEntries == ["chief"] && (planTeam.snapshots()[0]["text"] as? String ?? "").contains("added your cleanup to the plan"),
+                "only the supervisor answers: the teammates get the work through the plan: \(planFake.calls.map(speaker)) \(plannedEntries)")
+        require(BuddyTeamService.takesWork(["action": "add_request"]) && BuddyTeamService.takesWork(["action": "authorize"]) && BuddyTeamService.takesWork(["action": "revise", "ops": [["op": "add_task"]]])
+                && !BuddyTeamService.takesWork(["action": "get"]) && !BuddyTeamService.takesWork(["action": "revise", "ops": [["op": "edit_task"]]]), "adding or authorizing work counts; reading or editing a brief does not")
+        print("PASS: once the supervisor puts a group request into the team plan, the teammates get it there, and nobody else answers in the chat")
+
         // A fourth agent the person names is asked, not dropped.
         let four = members + [BuddyTeamAgent(id: "vera", name: "Vera", role: "Verifier", description: "Check the filter rules")]
         let crowded = request(members: four, text: "@Vera please sign off the filter rules")

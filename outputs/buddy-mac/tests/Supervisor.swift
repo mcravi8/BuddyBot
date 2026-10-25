@@ -1025,5 +1025,23 @@ import Foundation
                 "Lyra's lane gets her project's result and not Chief's: \(byModel["fixture-lyra-model"] ?? [])")
         lyraLane.shutdown()
         print("PASS: a project with its own Chief: each Chief's lane takes only its own plan's work, and the team's lane leaves that project to its Chief")
+
+        // 22. 25 Oct: the whole plan, eight stages and over a hundred tasks, was more than Chief could open, so it could not see that the stage
+        // it added was saved and asked the user to check. An agent gets finished stages as one line each, open stages in full, and always a reply
+        // it can open.
+        let longText = String(repeating: "Verified result with hashes, paths and a page-by-page audit. ", count: 40)
+        let bigStages: [[String: Any]] = (1...8).map { n in
+            ["id": "s\(n)", "n": n, "title": "Stage \(n)", "goal": "Goal \(n)", "acceptance": ["Done"], "status": n < 8 ? "done" : "working",
+             "request": n == 8 ? "Last cleanup on be8e8775, then stop. " + String(repeating: "Remove the word everywhere. ", count: 200) : "",
+             "tasks": (1...16).map { t in ["id": "t\(n)-\(t)", "title": "Task \(t)", "assignee": forge, "status": n < 8 ? "done" : "dispatched", "resultSummary": longText, "brief": longText] }]
+        }
+        let bigPlan: [String: Any] = ["id": "p", "status": "active", "supervisorId": chief, "stages": bigStages, "notices": (1...20).map { ["id": "n\($0)", "kind": "stage_report", "text": longText] }]
+        func bytes(_ v: [String: Any]) -> Int { (try? JSONSerialization.data(withJSONObject: v).count) ?? Int.max }
+        let forAgent = BuddyWorkerHost.fitForAgent(["plan": BuddyWorkerHost.agentPlan(bigPlan)]), shownStages = (forAgent["plan"] as? [String: Any])?["stages"] as? [[String: Any]] ?? []
+        require(bytes(["plan": bigPlan]) > BuddyTeamMonitor.toolResultLimit && bytes(forAgent) <= BuddyTeamMonitor.toolResultLimit, "the whole plan is over the limit and the agent's copy fits: \(bytes(["plan": bigPlan])) → \(bytes(forAgent))")
+        require(shownStages.count == 8 && shownStages.prefix(7).allSatisfy { $0["tasks"] as? Int == 16 && $0["goal"] == nil } && (shownStages.last?["tasks"] as? [[String: Any]])?.count == 16
+                && (shownStages.last?["tasks"] as? [[String: Any]] ?? []).allSatisfy { $0["brief"] == nil } && (shownStages.last?["request"] as? String ?? "").hasPrefix("Last cleanup on be8e8775"),
+                "finished stages are one line each, the open stage keeps its tasks (without briefs) and the start of the user's request")
+        print("PASS: an agent's copy of a big plan fits what it can open: finished stages in one line each, the open stage in full")
     }
 }

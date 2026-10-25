@@ -34,6 +34,19 @@ import Foundation
         let stopped: Bool
     }
     private var jobs: [String: Job] = [:]
+    /// Group replies whose request the team's supervisor put into the team plan during its turn: the teammates get the work there, as plan
+    /// tasks, so their turns in this reply are dropped. On 25 Oct Forge and Vera each answered “nothing is done yet” right after Chief added
+    /// the user's cleanup as a stage, before any task of it existed.
+    private var planned: Set<String> = []
+    func tookIntoPlan(_ runId: String) { if jobs[runId] != nil { planned.insert(runId) } }
+    /// Whether a plan action hands work to the team: a stage added from the user's request, a stage authorized, or tasks or a stage added.
+    static func takesWork(_ arguments: [String: Any]) -> Bool {
+        switch arguments["action"] as? String ?? "" {
+        case "add_request", "authorize": return true
+        case "revise": return (arguments["ops"] as? [[String: Any]] ?? []).contains { ["add_task", "add_stage"].contains($0["op"] as? String ?? "") }
+        default: return false
+        }
+    }
     private var jobOrder: [String] = []
     private var children: [String: Child] = [:]
     private var waiting: [String: Set<String>] = [:]
@@ -81,6 +94,12 @@ import Foundation
             var pending = plan.tasks
             while !pending.isEmpty {
                 try check(job)
+                // Everyone else waits for the supervisor, so once it has put the request into the plan, nobody is left to answer here.
+                if planned.contains(job.request.runId) {
+                    let dropped = Set(pending.map(\.agentId))
+                    job.entries.removeAll { dropped.contains($0["agentId"] as? String ?? "") }
+                    pending.removeAll(); emit(job); break
+                }
                 let ready = pending.filter { $0.dependsOn.allSatisfy { contributions[$0] != nil } }
                 guard !ready.isEmpty else { throw BuddyTeamFailure(message: "The team couldn’t complete its handoffs. Try again.") }
                 pending.removeAll { ready.map(\.agentId).contains($0.agentId) }
@@ -283,6 +302,7 @@ import Foundation
     }
     private func emit(_ job: Job) { onEvent?(snapshot(job)) }
     private func finish(_ job: Job, status: String, error: String = "") {
+        planned.remove(job.request.runId)
         guard busy(job.status) else { return }
         job.status = status; job.phase = status; job.error = error; emit(job)
     }

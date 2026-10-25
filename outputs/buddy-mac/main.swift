@@ -91,7 +91,10 @@ import AppKit
                 let replyRun=(context["replyRunId"] as? String).flatMap{$0.isEmpty ? nil:$0} ?? (context["proposalScope"] as? BuddyProposalScope)?.replyRunId ?? context["runId"] as? String ?? ""
                 var request:[String:Any]=["operation":"plan","workspace":workspace.workspace,"actorId":id,"authorizedText":context["authorizedUserText"] ?? "","requestId":(context["runId"] as? String ?? "")+":"+(context["callId"] as? String ?? ""),"arguments":arguments]
                 if let message=((state["runs"] as? [String:[String:Any]])?[replyRun])?["userId"] as? String {request["messageId"]=message}
-                return try await BuddyWorkerClient.call(support:self.supportURL,payload:request)
+                let result=try await BuddyWorkerClient.call(support:self.supportURL,payload:request)
+                // The request went into the team plan: in a group reply the teammates get it there, as plan tasks, not as turns in this reply.
+                if result["code"]==nil,result["error"]==nil,BuddyTeamService.takesWork(arguments) {self.teamwork.tookIntoPlan(replyRun)}
+                return result
             }
             if tool=="buddy_computer_task" {
                 // The person's message in this turn goes with it: the worker pins the account they named for the task, and only their words change it.
