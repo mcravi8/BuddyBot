@@ -536,6 +536,10 @@ import Foundation
         require(own.script && !own.forPerson, "a script naming its own project files by full path, under Application Support, goes to the supervisor: \(own.kind) \(own.reason)")
         try put("set p to \"/Users/someone/Library/Application Support/Google/Chrome/Default/Login Data\"\ntell application \"Microsoft Word\" to open (POSIX file p)\n", "elsewhere.applescript", in: privateCopy)
         require(BuddyCommandReview.assess("osascript elsewhere.applescript", project: privateCopy.path, credential: false).forPerson, "a path elsewhere in Application Support still stays with the user")
+        // 25 Oct: Forge ran its project's Word export script by its full path, and the command itself read as reading secrets.
+        let byFullPath = BuddyCommandReview.assess("/bin/zsh -lc \"python3 -I '\(privateCopy.path)/export_word.applescript'\"", project: privateCopy.path, credential: false)
+        require(!byFullPath.forPerson && byFullPath.reason != BuddyCommandReview.readsSecrets, "a command running its own project script by full path is not reading secrets: \(byFullPath.kind) \(byFullPath.reason)")
+        require(BuddyCommandReview.assess("cat '\(privateCopy.deletingLastPathComponent().path)/Other/Login Data'", project: privateCopy.path, credential: false).forPerson, "another place in Application Support named in a command still stays with the user")
         // Only what is on the person's own list goes to them; what Buddy just cannot read is the supervisor's.
         for command in ["make all", "cat ~/notes.txt", "./tools/talk.sh", "python3 ../elsewhere.py"] {
             let v = assess(command); require(v.kind == "unclear" && !v.forPerson, "the supervisor reads it: \(command) → \(v.kind) \(v.reason)")

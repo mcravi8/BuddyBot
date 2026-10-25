@@ -78,7 +78,13 @@ enum BuddyCommandReview {
     /// (it must lie inside the project; paths are then read from there). A command with a saved sign-in is never routine.
     static func assess(_ command: String, project: String, cwd: String? = nil, credential: Bool = false) -> Verdict {
         if credential { return sensitive("It signs in with your saved sign-in.") }
-        let text = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The project's own absolute path is the project, here as in a script (`screen`): a task's private copy lives under ~/Library/Application
+        // Support/Buddy, so a command running its own script by full path read as reading secrets (25 Oct: Forge's Word export went to the
+        // user's list). Only the whole path as a path counts (not inside a file:// address); a path elsewhere in Application Support still is.
+        var text = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        for own in Set([project, real(project)]).filter({ $0.count > 1 }).sorted(by: { $0.count > $1.count }) {
+            text = text.replacingOccurrences(of: #"(?<![\w/:.~-])"# + NSRegularExpression.escapedPattern(for: own) + #"(?=/|['"\s]|$)"#, with: ".", options: .regularExpression)
+        }
         guard !text.isEmpty, text.count <= 4000 else { return sensitive(unclear) }
         let lowered = text.lowercased()
         if secretMarks.contains(where: { lowered.contains($0) }) { return sensitive(readsSecrets) }
