@@ -8,3 +8,4 @@
 
 /* Nothing needs the person, but finished work is unread: a dot, no number. */
 .activity-nav>[data-activity-count].only-finished{min-width:8px;width:8px;height:8px;padding:0;top:4px;right:3px}
+.team-chat-agent-message .bot-bubble{background:transparent;border:1px solid var(--line)}.team-chat-agent-message.is-sent-back .bot-bubble{border-color:var(--warn-line)}.team-chat-more summary{cursor:pointer;font-size:11px;color:var(--text2);margin-top:4px}

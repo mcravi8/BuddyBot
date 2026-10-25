@@ -43,7 +43,7 @@ import Foundation
         // An agent sees its own work. The supervisor and the agent's manager also see the work of agents that share it; no other teammate does.
         let policy=try store.policy(raw),observed=try store.observed(raw,jobs:jobs,now:now),overseer=actor==policy["supervisorId"] as? String,managed=Self.managed(by:actor,in:raw)
         let allowed=observed.filter{record in let id=record["agentId"] as? String ?? "";return (id==actor || ((overseer || managed.contains(id)) && store.configuration(policy,agent:id)["participates"] as? Bool != false)) && (target==nil || id==target)}
-        out.removeValue(forKey:"profiles");out.removeValue(forKey:"updates");out.removeValue(forKey:"agentMessages");out.removeValue(forKey:"agentMessageRevision")
+        out.removeValue(forKey:"profiles");out.removeValue(forKey:"updates");out.removeValue(forKey:"agentMessages");out.removeValue(forKey:"groupMessages");out.removeValue(forKey:"agentMessageRevision")
         out["automaticClaudeUsage"]=["dailyLimitUSD":out.removeValue(forKey:"dailyLimitUSD") ?? NSNull(),"sharedAcrossAgents":true,"appliesTo":["team_checkins","preference_learning"],"excludes":["chat_replies","background_tasks","scheduled_tasks"],"dailyUsage":out.removeValue(forKey:"daily") ?? [:]]
         let visible=Set(allowed.compactMap{$0["agentId"] as? String})
         out["observed"]=(out["observed"] as? [[String:Any]] ?? []).filter{visible.contains($0["agentId"] as? String ?? "")}

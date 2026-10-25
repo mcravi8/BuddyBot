@@ -22,7 +22,11 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
 /// check or without any tasks, and a scope or objective decision made by anyone but the user.
 @MainActor final class BuddyPlanStore {
     static let live: Set<String> = ["draft", "active", "holding"]
-    static let maxStages = 6, maxTasks = 24, maxCriteria = 5, maxReworks = 3, maxOpenAddedPerStage = 12, maxAddedPerStage = 36
+    static let maxStages = 20, maxTasks = 24, maxCriteria = 5, maxReworks = 3, maxOpenAddedPerStage = 12, maxAddedPerStage = 36
+    /// A proposed plan has 2 to 6 stages; more come only as the user asks for more work (`addRequest`, `add_stage`), up to `maxStages`.
+    static let maxProposed = 6
+    /// How much of the user's own request a stage keeps, word for word.
+    static let requestLimit = 20000
     /// A worker task's brief may be 30,000 characters; a plan task's own brief leaves room for the authorization, the stage and its inputs.
     static let goalLimit = 30000, briefLimit = 20000
     static let tables = ["plans", "plan_stages", "plan_tasks", "plan_task_deps", "plan_scopes", "plan_decisions", "plan_notices"]
@@ -34,9 +38,9 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
         """,
         "CREATE UNIQUE INDEX IF NOT EXISTS plans_one_live ON plans(workspace, group_id) WHERE status IN ('draft','active','holding')",
         """
-        CREATE TABLE IF NOT EXISTS plan_stages(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 6),
+        CREATE TABLE IF NOT EXISTS plan_stages(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 20),
           title TEXT NOT NULL, goal TEXT NOT NULL, acceptance TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('proposed','approved','working','review','done','superseded')),
-          added_tasks INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(plan_id, ordinal))
+          added_tasks INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, request TEXT NOT NULL DEFAULT '', UNIQUE(plan_id, ordinal))
         """,
         """
         CREATE TABLE IF NOT EXISTS plan_tasks(id TEXT PRIMARY KEY, stage_id TEXT NOT NULL REFERENCES plan_stages(id), ordinal INTEGER NOT NULL,
@@ -92,7 +96,25 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
     init(directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         db = try BuddyOperationsDB(directory: directory)
+        try Self.widenStages(db)
         try db.transaction { for statement in Self.schema { try db.run(statement) } }
+    }
+    /// A database from before plans could grow past six stages refused a seventh (24 Oct: the user's revision round after Stage 6 could not be
+    /// added), and kept no request with a stage. Its stage table is rebuilt once with every row as it was; the triggers that read it come back
+    /// with the schema that follows.
+    static func widenStages(_ db: BuddyOperationsDB) throws {
+        guard let sql = try db.rows("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'plan_stages'").first?.first?.string, sql.contains("BETWEEN 1 AND 6") else { return }
+        try db.transaction {
+            try db.run("DROP TRIGGER IF EXISTS plan_task_dispatch_guard")
+            try db.run("""
+                CREATE TABLE plan_stages_widened(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 20),
+                  title TEXT NOT NULL, goal TEXT NOT NULL, acceptance TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('proposed','approved','working','review','done','superseded')),
+                  added_tasks INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, request TEXT NOT NULL DEFAULT '', UNIQUE(plan_id, ordinal))
+                """)
+            try db.run("INSERT INTO plan_stages_widened(id, plan_id, ordinal, title, goal, acceptance, status, added_tasks, created_at, updated_at) SELECT id, plan_id, ordinal, title, goal, acceptance, status, added_tasks, created_at, updated_at FROM plan_stages")
+            try db.run("DROP TABLE plan_stages")
+            try db.run("ALTER TABLE plan_stages_widened RENAME TO plan_stages")
+        }
     }
     private init(reading db: BuddyOperationsDB) { self.db = db }
 
@@ -120,7 +142,7 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
     // MARK: rows
 
     private struct PlanRow { let id, workspace, groupId, supervisorId, objective, status: String; let revision: Int; let createdBy, createdAt, updatedAt: String }
-    private struct StageRow { let id, planId: String; let n: Int; let title, goal: String; let acceptance: [String]; let status: String; let added: Int; let updatedAt: String }
+    private struct StageRow { let id, planId: String; let n: Int; let title, goal: String; let acceptance: [String]; let status: String; let added: Int; let updatedAt: String; let request: String }
     private struct TaskRow {
         let id, stageId: String; let ordinal: Int; let title, brief, deliverable, assignee, kind, status, blockedReason: String
         let dispatches, reworks: Int; let workerTaskId: String; let reviewAttempt: Int; let resultSummary, updatedAt: String
@@ -131,14 +153,14 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
     private static func s(_ row: Row, _ i: Int) -> String { i < row.count ? (row[i].string ?? row[i].int.map { String($0) } ?? "") : "" }
     private static func n(_ row: Row, _ i: Int) -> Int { i < row.count ? Int(row[i].int ?? Int64(row[i].string ?? "") ?? 0) : 0 }
     private static let planColumns = "id, workspace, group_id, supervisor_id, objective, status, revision, created_by, created_at, updated_at"
-    private static let stageColumns = "id, plan_id, ordinal, title, goal, acceptance, status, added_tasks, updated_at"
+    private static let stageColumns = "id, plan_id, ordinal, title, goal, acceptance, status, added_tasks, updated_at, request"
     private static let taskColumns = "t.id, t.stage_id, t.ordinal, t.title, t.brief, t.deliverable, t.assignee, t.kind, t.status, t.blocked_reason, t.dispatches, t.reworks, t.worker_task_id, t.review_attempt, t.result_summary, t.updated_at"
     private static let scopeColumns = "id, plan_id, through_ordinal, message_id, quote, status, created_at"
     private static func plan(_ r: Row) -> PlanRow {
         PlanRow(id: s(r, 0), workspace: s(r, 1), groupId: s(r, 2), supervisorId: s(r, 3), objective: s(r, 4), status: s(r, 5), revision: n(r, 6), createdBy: s(r, 7), createdAt: s(r, 8), updatedAt: s(r, 9))
     }
     private static func stage(_ r: Row) -> StageRow {
-        StageRow(id: s(r, 0), planId: s(r, 1), n: n(r, 2), title: s(r, 3), goal: s(r, 4), acceptance: strings(s(r, 5)), status: s(r, 6), added: n(r, 7), updatedAt: s(r, 8))
+        StageRow(id: s(r, 0), planId: s(r, 1), n: n(r, 2), title: s(r, 3), goal: s(r, 4), acceptance: strings(s(r, 5)), status: s(r, 6), added: n(r, 7), updatedAt: s(r, 8), request: s(r, 9))
     }
     private static func task(_ r: Row) -> TaskRow {
         TaskRow(id: s(r, 0), stageId: s(r, 1), ordinal: n(r, 2), title: s(r, 3), brief: s(r, 4), deliverable: s(r, 5), assignee: s(r, 6), kind: s(r, 7), status: s(r, 8), blockedReason: s(r, 9),
@@ -357,7 +379,9 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
             // A stage to check, or the stage the team is on while it has no tasks: the supervisor plans it.
             if stage.status == "review" || (tasks.isEmpty && stage.id == current?.id) { forSupervisor = true }
             lastChange = max(lastChange, stage.updatedAt)
-            stages.append(["id": stage.id, "n": stage.n, "title": stage.title, "goal": stage.goal, "acceptance": stage.acceptance, "status": stage.status, "tasks": tasks])
+            var row: [String: Any] = ["id": stage.id, "n": stage.n, "title": stage.title, "goal": stage.goal, "acceptance": stage.acceptance, "status": stage.status, "tasks": tasks]
+            if !stage.request.isEmpty { row["request"] = stage.request }
+            stages.append(row)
         }
         let notices: [[String: Any]] = try db.rows("SELECT id, kind, text, chat, status, created_at, refs FROM plan_notices WHERE plan_id = ? ORDER BY rowid DESC LIMIT 20", [.text(planId)]).reversed().map { r -> [String: Any] in
             ["id": Self.s(r, 0), "kind": Self.s(r, 1), "text": Self.s(r, 2), "chat": Self.n(r, 3) == 1, "status": Self.s(r, 4), "at": Self.s(r, 5), "refs": (try? BuddyOperationsDB.decode(Self.s(r, 6))) ?? [String: Any]()]
@@ -394,7 +418,7 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
     func propose(workspace: String, groupId: String, supervisorId: String, objective: String, stages: [[String: Any]], tasks: [[String: Any]], members: [String], by: String, team: [[String: Any]] = []) throws -> [String: Any] {
         guard !workspace.isEmpty, !groupId.isEmpty else { throw Self.invalid("Choose the group this plan is for.") }
         let objective = try Self.text(objective, "the objective", max: 1500)
-        guard (2...Self.maxStages).contains(stages.count) else { throw Self.invalid("Split the objective into 2 to 6 stages.") }
+        guard (2...Self.maxProposed).contains(stages.count) else { throw Self.invalid("Split the objective into 2 to 6 stages.") }
         let stageSpecs = try stages.map(Self.stageSpec)
         guard tasks.count <= Self.maxTasks else { throw Self.invalid("Start a plan with at most 24 tasks; more can be added inside a stage later.") }
         var specs: [(stage: Int, spec: TaskSpec)] = [], stageOfKey: [String: Int] = [:]
@@ -490,7 +514,7 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
                     case "add_stage":
                         let stages = try stageRows(planId)
                         if plan.status != "draft" && !userWords { throw Self.refused("Adding a stage to an authorized plan needs the user's own words.") }
-                        guard stages.count < Self.maxStages else { throw Self.invalid("A plan has at most 6 stages.") }
+                        guard stages.count < Self.maxStages else { throw Self.invalid("A plan has at most \(Self.maxStages) stages.") }
                         let spec = try Self.stageSpec((op["stage"] as? [String: Any]) ?? op), id = UUID().uuidString, n = (stages.map(\.n).max() ?? 0) + 1
                         try insertStage(id: id, planId: planId, n: n, spec: spec, now: now)
                         if plan.status != "draft" { _ = try recordDecision(planId: planId, kind: "objective", by: "user", question: "", choice: "Added stage \(n): \(spec.title).", rationale: "Added on the user's words by \(by).", stageId: id, taskId: "", workerTaskId: "") }
@@ -548,6 +572,29 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
             }
         }
         return try render(planId, jobs: [:], detail: true)
+    }
+
+    /// Work the user asked for in their own words that the plan's stages don't cover (24 Oct: a 12-item revision round after Stage 6): added as
+    /// the next stage with their whole message kept as its request, and authorized by that message, their go-ahead, so the team starts on it
+    /// without asking them to type an approval or tap a button. Returns the stage's number.
+    func addRequest(planId: String, stage value: [String: Any], request: String, quote: String, messageId: String, by: String, now: Date = Date()) throws -> Int {
+        guard let plan = try planRow(planId), Self.live.contains(plan.status) else { throw Self.missing("This plan is closed.") }
+        let stages = try stageRows(planId)
+        if let waiting = stages.first(where: { $0.status == "proposed" }) {
+            throw Self.conflict("Stage \(waiting.n) is not authorized yet, so new work can't be added after it; ask the user about stage \(waiting.n), or add this work to it with revise.")
+        }
+        guard stages.count < Self.maxStages else { throw Self.invalid("A plan has at most \(Self.maxStages) stages.") }
+        let spec = try Self.stageSpec(value), id = UUID().uuidString, n = (stages.map(\.n).max() ?? 0) + 1, at = Self.stamp(now)
+        let words = String(request.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.requestLimit))
+        try guarded {
+            try db.transaction {
+                try insertStage(id: id, planId: planId, n: n, spec: spec, now: at)
+                try db.run("UPDATE plan_stages SET request = ? WHERE id = ?", [.text(words), .text(id)])
+                _ = try recordDecision(planId: planId, kind: "objective", by: "user", question: "", choice: "Added stage \(n): \(spec.title).", rationale: "Asked for by the user (“\(String(quote.prefix(300)))”); added by \(by).", stageId: id, taskId: "", workerTaskId: "")
+            }
+        }
+        _ = try authorize(planId: planId, through: n, quote: quote, messageId: messageId, viaButton: false, now: now)
+        return n
     }
 
     /// The user stops the plan: nothing more is dispatched. Returns the worker tasks still open, for the worker to pause.
@@ -762,6 +809,7 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
             guard task.assignee != plan.supervisorId, (task.title + "\n" + task.brief).range(of: NSRegularExpression.escapedPattern(for: name) + #"[\s-]+owned\b"#, options: [.regularExpression, .caseInsensitive]) != nil else { return nil }
             return "“\(name)-owned” in it means \(name) supervises and reviews this task; you do the work."
         }
+        var requestLimit = Self.requestLimit
         func compose(brief: String, inputLimit: Int) -> String {
             var lines = ["Authorization: the user asked \"\(scope.quote)\" (\(scope.at)) for stage \(stage.n), \"\(stage.title)\"."]
             if !held.isEmpty {
@@ -772,8 +820,10 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
             }
             lines += [
                 "Stage goal: \(Self.clause(stage.goal)). Done when: \(Self.criteria(stage.acceptance)).",
-                "Your task (\(task.title)): \(brief)",
             ]
+            // Work the user asked for in their own words: the whole request, which is the exact scope this stage holds to.
+            if !stage.request.isEmpty { lines.append("The user's request for this stage, word for word (its exact scope; do what your task covers of it):\n" + String(stage.request.prefix(requestLimit)).replacingOccurrences(of: "\n", with: "\n  ")) }
+            lines.append("Your task (\(task.title)): \(brief)")
             if let owned { lines.append(owned) }
             lines.append("Deliverable: \(Self.clause(task.deliverable)). Save files with Buddy file tools in the connected project folder named in the brief, never in the Buddy files root.")
             if !inputs.isEmpty {
@@ -793,6 +843,7 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
         }
         var out = compose(brief: ownBrief.text, inputLimit: 1500)
         if out.count > Self.goalLimit { out = compose(brief: ownBrief.text, inputLimit: 300) }
+        if out.count > Self.goalLimit { requestLimit = max(4000, requestLimit - (out.count - Self.goalLimit) - 1); out = compose(brief: ownBrief.text, inputLimit: 300) }
         if out.count > Self.goalLimit { out = compose(brief: String(ownBrief.text.prefix(max(0, ownBrief.text.count - (out.count - Self.goalLimit) - 1))) + "…", inputLimit: 300) }
         return String(out.prefix(Self.goalLimit))
     }
@@ -1102,12 +1153,22 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
     /// and whether it was accepted or sent back. Agent messages shows these beside check-ins; nothing here changes the record.
     func conversations(workspace: String, limit: Int = 300) throws -> [[String: Any]] {
         try db.rows("""
-            SELECT d.id, d.kind, d.decided_by, d.question, d.choice, d.rationale, d.created_at, d.worker_task_id, t.assignee, t.title
+            SELECT d.id, d.kind, d.decided_by, d.question, d.choice, d.rationale, d.created_at, d.worker_task_id, t.assignee, t.title, p.group_id
             FROM plan_decisions d JOIN plans p ON p.id = d.plan_id JOIN plan_tasks t ON t.id = d.task_id
             WHERE p.workspace = ? AND d.kind IN ('answer', 'rework', 'accept') AND d.decided_by <> 'user' ORDER BY d.rowid DESC LIMIT ?
             """, [.text(workspace), .int(Int64(max(0, limit)))]).reversed().map { r in
             ["id": Self.s(r, 0), "kind": Self.s(r, 1), "by": Self.s(r, 2), "question": Self.s(r, 3), "choice": Self.s(r, 4), "rationale": Self.s(r, 5),
-             "at": Self.s(r, 6), "workerTaskId": Self.s(r, 7), "assignee": Self.s(r, 8), "title": Self.s(r, 9)]
+             "at": Self.s(r, 6), "workerTaskId": Self.s(r, 7), "assignee": Self.s(r, 8), "title": Self.s(r, 9), "groupId": Self.s(r, 10)]
+        }
+    }
+    /// Each plan task that has been handed out, with what the supervisor wrote for it and the group it belongs to: the group chat shows it as the
+    /// supervisor's message to the teammate.
+    func handedOut(workspace: String, limit: Int = 300) throws -> [[String: Any]] {
+        try db.rows("""
+            SELECT t.id, t.title, t.brief, t.assignee, p.supervisor_id, p.group_id FROM plan_tasks t JOIN plan_stages s ON s.id = t.stage_id JOIN plans p ON p.id = s.plan_id
+            WHERE p.workspace = ? AND t.dispatches > 0 ORDER BY t.updated_at DESC LIMIT ?
+            """, [.text(workspace), .int(Int64(max(0, limit)))]).map { r in
+            ["id": Self.s(r, 0), "title": Self.s(r, 1), "brief": Self.s(r, 2), "assignee": Self.s(r, 3), "supervisorId": Self.s(r, 4), "groupId": Self.s(r, 5)]
         }
     }
     /// Counts one more resume of a task by the supervisor. False once it has resumed the task 3 times: then the task needs another decision.
@@ -1185,15 +1246,25 @@ private extension String {
 /// ("Stage 2: add a robustness check"). It is deliberately strict: a question, a negation, a hypothetical or a deferral is not a request,
 /// because an authorization starts work. Anything it does not recognise is left to the conversation and the stage buttons.
 enum BuddyPlanIntent {
-    private static let numbers: [String: Int] = ["1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-                                                  "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, "5th": 5, "6th": 6]
-    private static let cardinal = #"(?:[1-6]|one|two|three|four|five|six)\b"#
-    private static let ordinal = #"(?:first|second|third|fourth|fifth|sixth|1st|2nd|3rd|4th|5th|6th)\b"#
+    /// Stage numbers 1 to 20 (a plan grows past its first six as the user asks for more work), as digits, words and ordinals.
+    private static let words = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+                                "seventeen", "eighteen", "nineteen", "twenty"]
+    private static let ordinalWords = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth", "thirteenth",
+                                       "fourteenth", "fifteenth", "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth"]
+    private static func suffix(_ n: Int) -> String { (11...13).contains(n % 100) ? "th" : [1: "st", 2: "nd", 3: "rd"][n % 10] ?? "th" }
+    private static let numbers: [String: Int] = {
+        var out: [String: Int] = [:]
+        for n in 1...20 { out[String(n)] = n; out[words[n - 1]] = n; out[ordinalWords[n - 1]] = n; out[String(n) + suffix(n)] = n }
+        return out
+    }()
+    private static let digits = #"(?:1[0-9]|20|[1-9])"#
+    private static let cardinal = "(?:" + digits + "|" + words.joined(separator: "|") + #")\b"#
+    private static let ordinal = "(?:" + ordinalWords.joined(separator: "|") + "|" + digits + #"(?:st|nd|rd|th))\b"#
     private static let joiner = #"\s*(?:,\s*(?:and\s+)?|&|\band\b|-|–|—|\bto\b|\bthrough\b|\bthru\b)\s*"#
     private static let verbs = #"(?:get|do|finish|complete|start|begin|run|tackle|execute|deliver|launch|handle|wrap\s+up|knock\s+out|kick\s+off|work\s+(?:on|through)|go\s+ahead\s+(?:with|on)|go\s+for|proceed\s+(?:with|to)|move\s+(?:on\s+)?to|continue\s+(?:with|to)|carry\s+on\s+with|push\s+through|take\s+on)"#
     private static func regex(_ pattern: String) -> NSRegularExpression { try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) }
     private static let request = regex(#"\b"# + verbs + #"\s+(?:the\s+)?(?:stages?\s+"# + cardinal + "(?:" + joiner + cardinal + ")*|" + ordinal + "(?:" + joiner + #"(?:the\s+)?"# + ordinal + #")*\s+stages?\b)(?:\s+(?:done|finished|completed|complete)\b)?"#)
-    private static let number = regex(#"\b(?:[1-6]|one|two|three|four|five|six|first|second|third|fourth|fifth|sixth|1st|2nd|3rd|4th|5th|6th)\b"#)
+    private static let number = regex(#"\b(?:"# + digits + #"(?:st|nd|rd|th)?|"# + (words + ordinalWords).joined(separator: "|") + #")\b"#)
     /// Words before the request, in the same sentence, that turn it into its opposite or into a question about it.
     private static let negation = regex(#"\b(?:don'?t|do\s+not|doesn'?t|does\s+not|didn'?t|did\s+not|never|not|no|nor|stop|cancel|without|before|hold\s+off|wait|instead\s+of|rather\s+than|shouldn'?t|won'?t|wouldn'?t|can'?t|cannot|mustn'?t|avoid|skip|forget)\b"#)
     private static let hypothetical = regex(#"\b(?:if|whether|would|could|should|might|maybe|perhaps|suppose|supposing|imagine|hypothetically|what|how|why|which|who|when|once|after|until|unless|wonder|think|thinking|considering|can\s+we|shall\s+we|do\s+we|are\s+we|is\s+it)\b"#)
@@ -1202,8 +1273,8 @@ enum BuddyPlanIntent {
     /// A request made politely ("can you get stage 1 done?"): the question mark and the "would" in it do not make it a question.
     private static let polite = regex(#"\b(?:(?:can|could|would|will)\s+(?:you|y'?all|you\s+guys|you\s+all|the\s+team|everyone)|(?:i'?d|i\s+would)\s+like\s+(?:you|the\s+team|y'?all|everyone)\s+to|i\s+(?:want|need)\s+(?:you|the\s+team|y'?all|everyone)\s+to)\b"#)
     private static let deferral = regex(#"\b(?:later|tomorrow|next\s+(?:week|month|time)|eventually|someday|some\s+day|at\s+some\s+point|hypothetically|or\s+not)\b"#)
-    private static let changeLead = regex(#"^\s*(?:(?:for|in|on|about)\s+)?(?:the\s+)?stage\s+((?:[1-6]|one|two|three|four|five|six)\b)\s*(?::|-|–|—)\s*(\S[\s\S]*)$"#)
-    private static let changeVerb = regex(#"^\s*(?:please\s+)?(?:change|update|edit|revise|modify|adjust|rewrite|amend)\s+(?:the\s+)?stage\s+((?:[1-6]|one|two|three|four|five|six)\b)(?:'s\s+(?:goal|acceptance(?:\s+criteria)?|criteria|title))?\s*(?::|-|–|—|\bto\b|\bso\s+(?:that|it)\b)\s*(\S[\s\S]*)$"#)
+    private static let changeLead = regex(#"^\s*(?:(?:for|in|on|about)\s+)?(?:the\s+)?stage\s+("# + cardinal + #")\s*(?::|-|–|—)\s*(\S[\s\S]*)$"#)
+    private static let changeVerb = regex(#"^\s*(?:please\s+)?(?:change|update|edit|revise|modify|adjust|rewrite|amend)\s+(?:the\s+)?stage\s+("# + cardinal + #")(?:'s\s+(?:goal|acceptance(?:\s+criteria)?|criteria|title))?\s*(?::|-|–|—|\bto\b|\bso\s+(?:that|it)\b)\s*(\S[\s\S]*)$"#)
 
     /// Typographic quotes and apostrophes as plain ones, one for one, so positions in the result are positions in the original.
     private static func plain(_ text: String) -> String {
@@ -1243,6 +1314,26 @@ enum BuddyPlanIntent {
         pieces.append(source.substring(from: cursor))
         let rest = pieces.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: " ")
         return (best.through, source.substring(with: best.range), rest.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.;:!"))))
+    }
+
+    /// Whether the user's message asks the team for work in the sentence `quote` was copied from: the quote is theirs, word for word, and that
+    /// sentence is not a question, a negation, a hypothetical or something for later. What the work is, the supervisor reads from the message.
+    static func asks(_ text: String, quote: String) -> Bool {
+        let normal = plain(text) as NSString, wanted = plain(quote).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard wanted.count >= 8 else { return false }
+        let found = normal.range(of: wanted, options: [.caseInsensitive])
+        guard found.location != NSNotFound else { return false }
+        let start = normal.rangeOfCharacter(from: boundaries, options: .backwards, range: NSRange(location: 0, length: found.location))
+        let sentenceStart = start.location == NSNotFound ? 0 : NSMaxRange(start)
+        let after = NSMaxRange(found)
+        let stop = normal.rangeOfCharacter(from: boundaries, options: [], range: NSRange(location: after, length: normal.length - after))
+        let sentenceEnd = stop.location == NSNotFound ? normal.length : stop.location
+        var lead = normal.substring(with: NSRange(location: sentenceStart, length: found.location - sentenceStart))
+        let rest = normal.substring(with: NSRange(location: found.location, length: sentenceEnd - found.location))
+        let asks = stop.location != NSNotFound && normal.character(at: stop.location) == 63
+        let isPolite = Self.found(polite, lead)
+        lead = polite.stringByReplacingMatches(in: lead, range: NSRange(location: 0, length: (lead as NSString).length), withTemplate: " ")
+        return !(Self.found(negation, lead) || Self.found(firstPerson, lead) || Self.found(hypothetical, lead) || Self.found(deferral, rest) || (asks && !isPolite))
     }
 
     /// "Stage 2: add a robustness check" → stage 2, "add a robustness check". A question is not a change.

@@ -312,6 +312,20 @@ import CryptoKit
         let page=Array(rows.suffix(40))
         return ["workspace":state["conversationWorkspace"] ?? "","messages":page,"nextCursor":rows.count>40 ? page.first!["id"]! : NSNull(),"messageRevision":Self.hash(all)]
     }
+    /// What the team's agents said to each other about a group's plan, as that group's chat shows it: each handoff, question, result and the
+    /// supervisor's reply as a message from one agent to another, the latest 80 per group, oldest first.
+    static func groupMessages(_ rows:[[String:Any]])->[String:[[String:Any]]] {
+        func cut(_ text:String)->String {text.count>2000 ? String(text.prefix(1999))+"…":text}
+        var out=[String:[[String:Any]]]()
+        for row in rows {
+            guard let group=row["groupId"] as? String,!group.isEmpty,let id=row["id"] as? String,let from=row["fromAgentId"] as? String,let to=row["toAgentId"] as? String else{continue}
+            let kind=row["kind"] as? String ?? "",ask=(row["question"] as? String ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
+            let reply=((row["body"] as? String).flatMap{$0.isEmpty ? nil:$0} ?? row["detail"] as? String ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
+            if !ask.isEmpty {out[group,default:[]].append(["id":id+":request","fromAgentId":from,"toAgentId":to,"kind":kind,"title":row["title"] ?? "","body":cut(ask),"at":row["createdAt"] ?? ""])}
+            if !reply.isEmpty,kind != "handoff" {out[group,default:[]].append(["id":id+":reply","fromAgentId":to,"toAgentId":from,"kind":kind,"title":row["title"] ?? "","verdict":row["verdict"] ?? "","body":cut(reply),"at":row["finishedAt"] ?? row["createdAt"] ?? ""])}
+        }
+        return out.mapValues{Array($0.enumerated().sorted{($0.element["at"] as? String ?? "",$0.offset)<($1.element["at"] as? String ?? "",$1.offset)}.map(\.element).suffix(80))}
+    }
     func status(state:[String:Any],plan:[[String:Any]]=[])->[String:Any] {
         let w=state["conversationWorkspace"] as? String ?? "",ids=Set((state["agents"] as? [[String:Any]] ?? []).compactMap{$0["id"] as? String})
         var out=(value["settings"] as? [String:[String:Any]])?[w] ?? [:]
@@ -335,6 +349,7 @@ import CryptoKit
             for (id,peer) in [(from,to),(to,from)] {var s=summaries[id] ?? ["count":0,"peers":[String]()];s["count"]=(s["count"] as? Int ?? 0)+count;var peers=s["peers"] as? [String] ?? [];if !peers.contains(peer){peers.append(peer)};s["peers"]=peers;s["events"]=(s["events"] as? [[String:Any]] ?? [])+events;summaries[id]=s}
         }
         out["agentMessages"]=summaries
+        out["groupMessages"]=Self.groupMessages(conversationRows)
         out["agentMessageRevision"]=Self.hash(conversationRows)
         out["daily"]=value["daily"] ?? [:];return out
     }

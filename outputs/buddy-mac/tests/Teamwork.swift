@@ -242,15 +242,18 @@ import Foundation
                          "other": [["id": "o1", "who": "you", "live": true, "body": "NOT_CHIEFS_GROUP", "createdAt": "2026-10-18T19:52:00Z"]]]]
         let dm = BuddyConversationHistory.context(dmState, target: "chief", runId: UUID().uuidString)
         require(dm.contains("You, in group Omori: @Chief do X") && dm.contains("You, in group Omori: you guys keep working") && dm.contains("DIRECT_QUESTION"), "the person's group messages to this agent or to everyone reach its direct chat: \(dm.prefix(600))")
-        require(!dm.contains("FORGE_ONLY") && !dm.contains("AGENT_REPLY") && !dm.contains("SAMPLE_NOT_LIVE") && !dm.contains("NOT_CHIEFS_GROUP") && !dm.contains(String(repeating: "y", count: 1300)), "messages to someone else, agents' replies, samples, other groups and overlong text are left out")
+        require(!dm.contains("FORGE_ONLY") && !dm.contains("AGENT_REPLY") && !dm.contains("SAMPLE_NOT_LIVE") && !dm.contains("NOT_CHIEFS_GROUP"), "messages to someone else, agents' replies, samples and other groups are left out")
+        // The person's own words are never cut (24 Oct: a 12-item request reached Chief cut at 1,200 characters, in the middle of item 3).
+        require(dm.contains(String(repeating: "y", count: 1300)), "a long message of the person's is carried whole")
         let many: [String: Any] = ["agents": [["id": "chief", "name": "Chief"]], "groups": [["id": "omori", "name": "Omori", "members": ["chief"]]], "messages": ["omori": (0..<15).map { ["id": "m\($0)", "who": "you", "live": true, "body": "GROUP_NOTE_\($0)_", "createdAt": String(format: "2026-10-18T19:%02d:00Z", $0)] as [String: Any] }]]
         let recent = BuddyConversationHistory.context(many, target: "chief", runId: UUID().uuidString)
         require(!recent.contains("GROUP_NOTE_4_") && recent.contains("GROUP_NOTE_5_") && recent.contains("GROUP_NOTE_14_"), "only the person's last ten group messages are carried")
         // Group history keeps more of the latest messages, where the current thread usually is.
         var longState: [String: Any] = ["conversationWorkspace": r.workspace, "agents": members.map { ["id": $0.id, "name": $0.name, "role": $0.role, "description": $0.description] }, "groups": [["id": r.groupId, "name": r.name, "objective": r.objective, "members": members.map(\.id)]], "runs": [String: Any]()]
-        longState["messages"] = [r.groupId: (0..<5).map { ["id": "l\($0)", "who": "you", "live": true, "body": "L\($0)" + String(repeating: "z", count: 5000)] as [String: Any] }]
+        longState["messages"] = [r.groupId: (0..<6).map { n -> [String: Any] in n % 2 == 0 ? ["id": "l\(n)", "who": "you", "live": true, "body": "L\(n)" + String(repeating: "z", count: 5000)]
+            : ["id": "l\(n)", "who": "agent", "live": true, "status": "completed", "body": "L\(n)" + String(repeating: "z", count: 5000)] }]
         let longHistory = try BuddyTeamRequest.from(workspace: longState, payload: ["runId": UUID().uuidString, "groupId": r.groupId, "key": r.key, "text": "next"]).history.components(separatedBy: "\n\n")
-        require(longHistory.map(\.count) == [1205, 1205, 4005, 4005, 4005],"the last three group messages keep 4,000 characters and earlier ones 1,200: \(longHistory.map(\.count))")
-        print("PASS: the person's group messages addressed to an agent reach its direct chat, bounded, and group history keeps more of the latest messages")
+        require(longHistory.map(\.count) == [5007, 1206, 5007, 4006, 5007, 4006],"the person's messages are whole; the team's keep 4,000 characters among the last three and 1,200 before: \(longHistory.map(\.count))")
+        print("PASS: the person's group messages addressed to an agent reach its direct chat whole, and group history keeps the person's words whole and more of the team's latest replies")
     }
 }

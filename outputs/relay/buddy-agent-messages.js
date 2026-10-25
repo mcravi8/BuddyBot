@@ -13,7 +13,8 @@
     const known=new Set(state.agents.map(a=>a.id)),seen=new Set(),team=(state.groups||[]).find(g=>g.id===agent),members=new Set(team?.members||[]);
     const activity=(events||[]).filter(e=>{
       if(!e||typeof e.id!=='string'||typeof e.exchangeId!=='string'||seen.has(e.id)||!known.has(e.fromAgentId)||!known.has(e.toAgentId)||!Number.isFinite(stamp(e.at)))return false;
-      if(team?!(e.item?.kind==='team-chat-item'&&members.has(e.fromAgentId)&&members.has(e.toAgentId)):e.fromAgentId===e.toAgentId||![e.fromAgentId,e.toAgentId].includes(agent))return false;
+      // In a group: its team's work, and what agents said to each other about its plan (the supervisor may not be a member).
+      if(team?!(e.item?.kind==='team-chat-item'&&(e.item.planChat===true||members.has(e.fromAgentId)&&members.has(e.toAgentId))):e.fromAgentId===e.toAgentId||![e.fromAgentId,e.toAgentId].includes(agent))return false;
       seen.add(e.id);return true;
     }).slice().sort((a,b)=>stamp(a.at)-stamp(b.at)||a.id.localeCompare(b.id));
     if(!activity.length)return messages;
@@ -46,30 +47,33 @@
   }
   const api={validRows,mergeTimeline};root.BuddyAgentMessages=api;if(typeof module!=='undefined')module.exports=api;
   if(typeof document==='undefined')return;
-  let summaryWorkspace='',summaries={},updateTimes={},scope='',focus=[],rows=[],next=null,generation=0,loading=false,error='',revision='',newActivity=false;
+  let summaryWorkspace='',summaries={},groupChats={},updateTimes={},scope='',focus=[],rows=[],next=null,generation=0,loading=false,error='',revision='',newActivity=false;
   const native=()=>!!window.BuddyDesktop?.worker;
   const time=value=>value?new Date(value).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
   const status=value=>({queued:'Queued',running:'Waiting for reply',completed:'Completed',failed:'Couldn’t complete',interrupted:'Interrupted',budget:'Usage limit reached',cancelled:'Cancelled'}[value]||value);
   api.timeline=(id,messages)=>findGroup(id)?window.BuddyTeamChat?.timeline(id,messages)||messages:mergeTimeline(state,id,messages,summaryWorkspace===state.conversationWorkspace?summaries[id]?.events:[],updateTimes);
+  // What the team's agents said to each other about a group's plan, for that group's chat.
+  api.groupMessages=id=>summaryWorkspace===state.conversationWorkspace&&Array.isArray(groupChats[id])?groupChats[id]:[];
   api.hasTimeline=id=>findGroup(id)?window.BuddyTeamChat?.hasTimeline(id)||false:api.timeline(id,[]).length>0;
   api.marker=m=>`<div class="agent-message-activity" data-agent-activity="${esc(m.id)}"><time datetime="${esc(m.at)}" title="${esc(time(m.at)+(m.at!==m.endAt?' – '+time(m.endAt):''))}">${esc(time(m.at))}</time><button type="button" class="agent-messages-link" data-agent-messages="${esc(m.agentId)}" data-agent-exchanges="${esc(JSON.stringify(m.exchangeIds))}"><span class="agent-message-count">${m.count} ${m.count===1?'message':'messages'} with</span><span class="agent-message-peers">${m.peers.map(peer=>`<span class="agent-message-peer">${avatar(peer,true)}<span>${esc(agentName(peer))}</span></span>`).join(' ')}</span>${icon('chevron')}</button></div>`;
   api.accept=value=>{
     if(value.workspace!==state.conversationWorkspace)return;
-    const changed=summaryWorkspace!==value.workspace||JSON.stringify(summaries)!==JSON.stringify(value.agentMessages||{});
-    summaryWorkspace=value.workspace;summaries=value.agentMessages||{};updateTimes=Object.fromEntries((value.updates||[]).map(u=>[u.id,u.at]));
+    const changed=summaryWorkspace!==value.workspace||JSON.stringify(summaries)!==JSON.stringify(value.agentMessages||{})||JSON.stringify(groupChats)!==JSON.stringify(value.groupMessages||{});
+    summaryWorkspace=value.workspace;summaries=value.agentMessages||{};groupChats=value.groupMessages||{};updateTimes=Object.fromEntries((value.updates||[]).map(u=>[u.id,u.at]));
     if(changed&&ui.view.kind==='chat')refreshLiveChat(ui.view.target);
     if(document.querySelector('[data-agent-message-panel]')&&value.agentMessageRevision&&value.agentMessageRevision!==revision&&!loading){newActivity=true;const notice=document.querySelector('[data-agent-message-new]');if(notice)notice.hidden=false;}
   };
   function bubble(agent,body,extra='',reply=false,tag=''){return `<div class="agent-exchange-message ${reply?'is-reply':''}"><div class="agent-exchange-sender">${avatar(agent,true)}<strong>${esc(agentName(agent))}</strong>${tag?`<span class="agent-exchange-verdict ${tag==='Sent back'?'is-back':''}">${esc(tag)}</span>`:''}</div><div class="reply-markdown">${BuddyMarkdown.render(body)}</div>${extra}</div>`;}
   // One exchange as a short conversation, both sides: what was asked or handed in, then the reply. A question and its answer, or a result and
   // the supervisor's verdict, come from the plan's record; a check-in is a question the supervisor asked a teammate.
-  const kinds={question:'Question',result:'Work handed in',checkin:'Check-in'};
+  const kinds={question:'Question',result:'Work handed in',checkin:'Check-in',handoff:'Task handed out'};
   function exchange(r){
     const ask=String(r.question||''),body=String(r.body||''),detail=String(r.detail||''),kind=kinds[r.kind]||'Check-in';
     const opening=bubble(r.fromAgentId,ask);
     const more=body&&detail&&body!==detail?`<details><summary>${r.kind==='question'?'Why':'Details'}</summary><div class="reply-markdown">${BuddyMarkdown.render(detail)}</div></details>`:'';
     const tag=r.verdict==='accepted'?'Accepted':r.verdict==='sent back'?'Sent back':'';
-    const reply=r.status==='completed'?(body||detail?bubble(r.toAgentId,body||detail,more,true,tag):`<p class="agent-exchange-system">${esc(agentName(r.toAgentId))} didn’t reply.</p>`):'';
+    // A task handed out is answered by the work itself (its result is its own exchange), so it has no reply here.
+    const reply=r.kind==='handoff'?'':r.status==='completed'?(body||detail?bubble(r.toAgentId,body||detail,more,true,tag):`<p class="agent-exchange-system">${esc(agentName(r.toAgentId))} didn’t reply.</p>`):'';
     const title=r.kind==='result'&&r.title?` · ${esc(r.title)}`:'';
     return `<section class="agent-exchange${focus.includes(r.id)?' is-focused':''}" data-agent-exchange="${esc(r.id)}"><div class="agent-exchange-heading"><span>${kind}${title}</span><time>${esc(time(r.createdAt))}</time></div>${opening}${reply}${r.status!=='completed'?`<p class="agent-exchange-status ${['failed','interrupted'].includes(r.status)?'is-error':''}" role="status">${esc(status(r.status))}${r.error?` · ${esc(r.error)}`:''}</p>`:''}</section>`;
   }

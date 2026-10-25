@@ -91,7 +91,7 @@ import Foundation
         require(tool["name"] as? String == "buddy_plan" && schema["required"] as? [String] == ["action"], "the buddy_plan schema requires only action: \(schema["required"] ?? "none")")
         require(description.contains("always ask which stage") && description.contains("Get stage N done"), "the tool says to always ask which stage to get done, and to point to the stage button: \(description)")
         let actions = ((schema["properties"] as? [String: Any])?["action"] as? [String: Any])?["enum"] as? [String]
-        require(actions == ["get", "propose", "authorize", "revise", "answer"], "an agent can get, propose, authorize, revise and answer, never stop: \(actions ?? [])")
+        require(actions == ["get", "propose", "authorize", "add_request", "revise", "answer"], "an agent can get, propose, authorize, add the user's request, revise and answer, never stop: \(actions ?? [])")
         let chatNames = BuddyWorkerClient.chatTools.compactMap { $0["name"] as? String }, toolNames = BuddyWorkerClient.tools.compactMap { $0["name"] as? String }
         require(chatNames == toolNames + ["buddy_plan", "buddy_resolve_waiting"], "chat turns, direct and group, are offered every tool plus the plan and handing the user's input to a waiting task: \(chatNames)")
         for phrase in ["per-task", "per-run budget", "task spending limit", "remaining budget", "Existing budgets", "necessary user decision"] { require(!description.contains(phrase), "the plan tool does not say \(phrase)") }

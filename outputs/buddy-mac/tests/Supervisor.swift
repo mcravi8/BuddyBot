@@ -180,7 +180,8 @@ import Foundation
         // what) itself, and tells a coding task how a command comes to review instead of restarting it.
         require(speaking.contains("A command review item with onUsersList is a request on the user's list") && speaking.contains("Only the user can approve it")
                 && speaking.contains("decline_command and say in reason exactly how") && speaking.contains("how is the team's") && speaking.contains("never forward it; objective is only for a change to what is delivered")
-                && speaking.contains("there is no separate review tool") && speaking.contains("never reassign or cancel it for that: rework it"),
+                && speaking.contains("there is no separate review tool") && speaking.contains("never reassign or cancel it for that: rework it")
+                && speaking.contains("A stage with a request is one the user asked for in their own words: its tasks together cover every item of that request"),
                 "the supervisor screens the user's list, owns the how, and doesn't loop on a missing review tool")
         require(speaking.hasSuffix(BuddySupervisorLane.speaking) && speaking.contains(BuddyVoice.plain) && speaking.contains("forward_to_user's text opens with what you ask of the user") && speaking.contains("a short report for the user (see below)")
                 && speaking.contains("Everything else you write (reasons, answers, rework instructions, briefs) is for the team") && !speaking.contains("the files, the decisions you made, open issues"), "the supervisor writes to the user plainly and keeps exact details for the team")

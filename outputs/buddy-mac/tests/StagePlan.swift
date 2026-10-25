@@ -790,6 +790,79 @@ import Foundation
             print("PASS: Chief directs and cheaper agents do the work: tasks proposed, added or reassigned to the supervisor go to the member whose role and tools fit, with the reason in the plan; a team with only the supervisor keeps them; a task already on the supervisor moves when it is next started, and “Chief-owned” reads as Chief supervising")
         }
 
+        // 18. Work the user asks for beyond the plan (24 Oct: a 12-item revision round after all six stages were done). Chief told them to tap a
+        // “Get stage 7 done” that did not exist, then to type an approval, then to paste the request again, and the database refused a seventh
+        // stage anyway. Their clear request is now added as the next stage, authorized by their own message, with the whole message kept as the
+        // stage's request and given word for word in every task brief; a plan grows past six stages; an older database is widened once, rows kept.
+        do {
+            // An older database: the stage table refused a seventh stage and had no request. It is rebuilt once, with every row as it was.
+            let legacy = root.appendingPathComponent("legacy-stages").appendingPathComponent("Worker")
+            try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+            let old = try BuddyOperationsDB(directory: legacy)
+            try old.run("CREATE TABLE plans(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, group_id TEXT NOT NULL, supervisor_id TEXT NOT NULL, objective TEXT NOT NULL CHECK(length(objective) BETWEEN 1 AND 1500), status TEXT NOT NULL CHECK(status IN ('draft','active','holding','achieved','archived')), revision INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            try old.run("""
+                CREATE TABLE plan_stages(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plans(id), ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 6),
+                  title TEXT NOT NULL, goal TEXT NOT NULL, acceptance TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('proposed','approved','working','review','done','superseded')),
+                  added_tasks INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(plan_id, ordinal))
+                """)
+            try old.run("INSERT INTO plans VALUES('p-old', ?, ?, ?, 'The old plan', 'holding', 4, ?, '2026-10-20T00:00:00Z', '2026-10-20T00:00:00Z')", [.text(w), .text(group), .text(chief), .text(chief)])
+            for n in 1...6 { try old.run("INSERT INTO plan_stages VALUES(?, 'p-old', ?, ?, 'A goal', '[\"Done\"]', 'done', ?, '2026-10-20T00:00:00Z', '2026-10-20T00:00:00Z')", [.text("s-old-\(n)"), .int(Int64(n)), .text("Stage \(n)"), .int(Int64(n))]) }
+            let widened = try BuddyPlanStore(directory: legacy), raw18 = try BuddyOperationsDB(directory: legacy, existing: true)
+            let sql18 = try raw18.rows("SELECT sql FROM sqlite_master WHERE name = 'plan_stages'").first?.first?.string ?? ""
+            let kept = try raw18.rows("SELECT ordinal, title, status, added_tasks, request FROM plan_stages WHERE plan_id = 'p-old' ORDER BY ordinal").map { "\($0[0].int ?? 0) \($0[1].string ?? "") \($0[2].string ?? "") \($0[3].int ?? 0) [\($0[4].string ?? "-")]" }
+            let triggers = Set(try raw18.rows("SELECT name FROM sqlite_master WHERE type = 'trigger'").compactMap { $0.first?.string })
+            require(sql18.contains("BETWEEN 1 AND 20") && sql18.contains("request") && kept == (1...6).map { "\($0) Stage \($0) done \($0) []" }
+                    && triggers.isSuperset(of: ["plan_task_dispatch_guard", "plan_stage_done_guard", "plan_stage_done_needs_tasks"]),
+                    "the old stage table is widened once with every row kept, and its guards are back: \(kept) \(triggers.sorted())")
+            _ = try BuddyPlanStore(directory: legacy)
+            require(try raw18.rows("SELECT COUNT(*) FROM plan_stages").first?.first?.int == 6, "opening it again changes nothing")
+            _ = widened
+
+            // A plan whose six stages are all done takes the user's request as stage 7, authorized by their message, and the team starts on it.
+            let (store18, plans18, _) = try fresh(root, "request")
+            let six = (1...6).map { n -> [String: Any] in ["title": "Stage \(n)", "goal": "Goal \(n)", "acceptance": ["Deliverable \(n) saved"]] }
+            let planID18 = ids(try plans18.propose(workspace: w, groupId: group, supervisorId: chief, objective: "The report", stages: six, tasks: [], members: members, by: chief))
+                .plan
+            _ = try plans18.authorize(planId: planID18, through: 6, quote: "get stage 6 done", messageId: "m6", viaButton: false, now: Date())
+            // All six are done, as the user's were: each with a finished task and its recorded check.
+            let raw18b = try BuddyOperationsDB(directory: root.appendingPathComponent("request").appendingPathComponent("Worker"), existing: true), at18 = ISO8601DateFormatter().string(from: Date())
+            for row in try raw18b.rows("SELECT id FROM plan_stages WHERE plan_id = ? ORDER BY ordinal", [.text(planID18)]) {
+                let sid = row[0].string ?? ""
+                try raw18b.run("INSERT INTO plan_tasks(id, stage_id, ordinal, title, brief, deliverable, assignee, kind, status, created_at, updated_at) VALUES(?, ?, 1, 'Done work', 'Done.', 'A file', ?, 'general', 'done', ?, ?)", [.text(UUID().uuidString), .text(sid), .text(forge), .text(at18), .text(at18)])
+                try raw18b.run("INSERT INTO plan_decisions(id, plan_id, stage_id, task_id, worker_task_id, decided_by, kind, question, choice, rationale, created_at) VALUES(?, ?, ?, '', '', ?, 'stage_done', '', 'done', 'Checked.', ?)", [.text(UUID().uuidString), .text(planID18), .text(sid), .text(chief), .text(at18)])
+                try raw18b.run("UPDATE plan_stages SET status = 'done' WHERE id = ?", [.text(sid)])
+            }
+            let request = "Final revision round on version 09564456. Apply all items below, log them as D-entries, regenerate the DOCX, the native Word PDF and the Word 97-2003 DOC, update the manifest, then stop and hand back for my signature. No other changes.\n\n"
+                + (1...12).map { "\($0). Item \($0): " + String(repeating: "keep every number from frozen outputs. ", count: 8) }.joined(separator: "\n")
+            require(request.count > 3000, "the request is as long as the user's: \(request.count)")
+            let quote = "Apply all items below, log them as D-entries, regenerate the DOCX, the native Word PDF and the Word 97-2003 DOC, update the manifest, then stop and hand back for my signature."
+            require(BuddyPlanIntent.asks(request, quote: quote), "a direct request is the user asking for the work")
+            require(!BuddyPlanIntent.asks("Could we maybe do a final revision round on the report later?", quote: "do a final revision round on the report"), "a maybe-later question is not")
+            require(!BuddyPlanIntent.asks("Don't apply all items below yet.", quote: "apply all items below yet"), "a negation is not")
+            require(!BuddyPlanIntent.asks(request, quote: "Apply every item and also submit it"), "words the user didn't write are not")
+            let n18 = try plans18.addRequest(planId: planID18, stage: ["title": "Final revision round", "goal": "Apply the user's 12 revision items to version 09564456 and hand back for signature", "acceptance": ["All 12 items applied and logged as D-entries", "DOCX, PDF and DOC regenerated and the manifest updated", "Vera verified before handback"]],
+                                             request: request, quote: quote, messageId: "m-request", by: chief)
+            let plan18 = try plans18.plan(id: planID18) ?? [:], stage7 = try stage(plans18, planID18, 7)
+            require(n18 == 7 && stage7["request"] as? String == request.trimmingCharacters(in: .whitespacesAndNewlines) && plan18["status"] as? String == "active" && (stage7["status"] as? String).map { ["approved", "working"].contains($0) } == true,
+                    "the request is stage 7, authorized, with the user's whole message: \(n18) \(stage7["status"] ?? "-") \((stage7["request"] as? String)?.count ?? 0)")
+            let added18 = try plans18.addTasks(stageId: stage7["id"] as? String ?? "", tasks: [["key": "r1", "title": "Apply the revision items", "assignee": forge, "kind": "coding", "brief": "Apply items 1 to 12.", "deliverable": "The regenerated DOCX, PDF and DOC"]], by: chief, members: members)
+            let started18 = try BuddyStageLoop.step(plans: plans18, workspace: w, jobs: store18.jobs, names: names, dispatch: dispatcher(store18))
+            let goal18 = store18.jobs.first { $0["id"] as? String == started18.first }?["goal"] as? String ?? ""
+            require(added18.count == 1 && started18.count == 1 && goal18.contains("The user's request for this stage, word for word") && goal18.contains("12. Item 12:") && goal18.contains("Authorization: the user asked \"\(quote)\""),
+                    "the team starts on it, and the task's brief carries the whole request word for word: \(started18.count) \(goal18.prefix(300))")
+            let decided = try BuddyOperationsDB(directory: root.appendingPathComponent("request").appendingPathComponent("Worker"), existing: true)
+                .rows("SELECT kind, decided_by FROM plan_decisions WHERE plan_id = ? AND kind IN ('objective', 'scope') ORDER BY rowid DESC LIMIT 2", [.text(planID18)]).map { "\($0[0].string ?? "") \($0[1].string ?? "")" }
+            require(decided == ["scope user", "objective user"], "both the added stage and its go-ahead are recorded as the user's: \(decided)")
+
+            // A draft plan's unauthorized stages are not authorized by the back door.
+            let (_, draft18, _) = try fresh(root, "request-draft")
+            let draftID = ids(try draft18.propose(workspace: w, groupId: group, supervisorId: chief, objective: "Draft", stages: stages, tasks: [], members: members, by: chief)).plan
+            throwsCode("conflict", "new work can't go after stages the user hasn't authorized") {
+                _ = try draft18.addRequest(planId: draftID, stage: ["title": "More", "goal": "More work", "acceptance": ["Done"]], request: request, quote: quote, messageId: "m", by: chief)
+            }
+            print("PASS: work the user asks for beyond the plan becomes its next stage at once, authorized by their own message, with their whole request kept and given word for word in every task brief; a plan grows past six stages; an older database is widened once with every row kept; a question, a negation or words they didn't write add nothing, and a draft's stages are not authorized through it")
+        }
+
         // 8. Graceful read.
         let empty = root.appendingPathComponent("empty")
         _ = try BuddyWorkerStore(directory: empty.appendingPathComponent("Worker"))

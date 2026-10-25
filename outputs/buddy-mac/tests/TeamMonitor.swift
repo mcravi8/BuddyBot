@@ -630,6 +630,15 @@ final class KeyBox {var key:String?="fixture-key"}
     require(failed.isEmpty,"\(failed.count) expectation(s) about check-ins cut short failed")
     print("PASS: an automatic check-in cut short is never shown: an unreadable key or time asleep does not stop it, a pause, a reconnect or its time limit queue it again quietly (paced and bounded), a disconnect drops it without a word, and saved interruptions stop showing without being deleted")
   }
+  // 24 Oct: the user asked to see agents talk to each other in the group chat (“Chief: Forge, look at … and do …”). A group's plan exchanges
+  // become messages from one agent to another: a handoff has no reply (the work answers it), a result gets the verdict, all in time order.
+  let chats=BuddyTeamMonitorStore.groupMessages([
+    ["id":"plan:d1","kind":"result","fromAgentId":"forge","toAgentId":"chief","title":"Revision","question":"Handed in.","body":"Remove the page break on page 10.","verdict":"sent back","createdAt":"2026-10-24T18:00:00Z","finishedAt":"2026-10-24T18:02:00Z","groupId":"g"],
+    ["id":"handoff:j1","kind":"handoff","fromAgentId":"chief","toAgentId":"forge","title":"Revision","question":"Forge, apply the 12 items.","body":"","createdAt":"2026-10-24T17:30:00Z","finishedAt":"2026-10-24T17:30:00Z","groupId":"g"],
+    ["id":"checkin","kind":"checkin","fromAgentId":"chief","toAgentId":"forge","question":"How is it going?","body":"Fine.","createdAt":"2026-10-24T17:40:00Z","finishedAt":"2026-10-24T17:41:00Z"]])
+  let shown=(chats["g"] ?? []).map{"\($0["fromAgentId"] ?? "")>\($0["toAgentId"] ?? ""):\($0["body"] ?? "")"}
+  require(chats.count==1 && shown==["chief>forge:Forge, apply the 12 items.","forge>chief:Handed in.","chief>forge:Remove the page break on page 10."] && (chats["g"]?.last?["verdict"] as? String)=="sent back",
+          "the group's chat gets its plan exchanges as agents' messages, in order, without the check-in outside any group: \(shown)")
   print("PASS: real private check-ins, Chief oversight, selected models, quiet defaults and opt-in updates, idle suppression, source receipts, ongoing preference learning, exact quotes, manual precedence, sharing revocation and workspace isolation")
  }
 }

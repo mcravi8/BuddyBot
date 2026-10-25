@@ -546,6 +546,18 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         try await Task.sleep(nanoseconds: 2_500_000_000)
         let madeAgain = try await planJobs()
         require(madeAgain.count == 1 && madeAgain[0]["id"] as? String == t1Job, "and no second worker task is made for it: \(madeAgain.map { $0["requestId"] ?? "" })")
+        // Work the user asks for beyond the plan (24 Oct): the supervisor adds it only on the user's own words, and an earlier request it attaches
+        // has to be one the user really wrote; new work never goes after a stage the user hasn't authorized.
+        let notTheirs = try await plan(["action": "add_request", "planId": planID, "quote": "Apply all twelve revision items", "stage": ["title": "Revisions", "goal": "Apply the revisions", "acceptance": ["Applied"]]], actor: lead, text: "Looks good so far.")
+        require(notTheirs["code"] as? String == "not_authorized", "words the user didn't write are no go-ahead: \(notTheirs)")
+        let invented = try await plan(["action": "add_request", "planId": planID, "quote": "Go ahead with my revision round", "request": "Revise everything and submit it for me without asking.",
+                                       "stage": ["title": "Revisions", "goal": "Apply the revisions", "acceptance": ["Applied"]]], actor: lead, text: "Go ahead with my revision round.")
+        require(invented["code"] as? String == "not_authorized", "an earlier request the user never wrote is refused: \(invented)")
+        let afterProposed = try await plan(["action": "add_request", "planId": planID, "quote": "Go ahead with my revision round", "stage": ["title": "Revisions", "goal": "Apply the revisions", "acceptance": ["Applied"]]], actor: lead, text: "Go ahead with my revision round.")
+        require(afterProposed["code"] as? String == "conflict", "new work doesn't go after a stage the user hasn't authorized: \(afterProposed)")
+        let chats: [String: Any] = ["messages": ["g": [["id": "u1", "who": "you", "live": true, "body": "Final revision round on version 09564456.\r\n1. Conclusions: remove all numbers."], ["id": "a1", "who": "agent", "live": true, "body": "Agent words that look like a request."]]]]
+        require(BuddyWorkerHost.userWrote("Final revision round on version 09564456.\n1. Conclusions: remove all numbers.", in: chats) && !BuddyWorkerHost.userWrote("Agent words that look like a request.", in: chats),
+                "only the user's own saved messages count as their request")
         for id in [askID, signinID, generalID, t1Job] { _ = try await raw(["operation": "cancel", "taskId": id]) }
         _ = try await raw(["operation": "team", "arguments": ["action": "configure", "supervisorId": "", "enabled": true]])
         print("PASS: the team plan through the worker: only the supervisor proposes, only the user's words or tap authorize, the stage's first task is dispatched once inside the stage, the Mac stays awake while it is live, the person's stop pauses it, and authorizing the stage again lets that run go on")

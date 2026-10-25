@@ -102,7 +102,7 @@ import Darwin
             // A worker that has just started has no live holders: whatever the last one held is free.
             _ = try store.breakAllLeases()
             monitor=try BuddyTeamMonitor(support:support,makeClaude:makeCoding,makeGPT:{ConversationService(support:self.support,executable:self.executableOverride)},keyReader:keyReader)
-            monitor.planConversations={[weak self] in self?.planExchanges() ?? []}
+            monitor.planConversations={[weak self] in (self?.planExchanges() ?? []) + (self?.planHandoffs() ?? [])}
             supervisor = BuddySupervisorLane(support: support, store: store, plans: plans, makeClaude: makeCoding, makeGPT: { [support, executableOverride] in ConversationService(support: support, executable: executableOverride) }, keyReader: keyReader,
                                              hooks: .init(stopTask: { [weak self] id, cause in await self?.stop(id, status: "cancelled", cause: cause) },
                                                           taskFiles: { [weak self] id in self?.taskFiles(id) ?? [] },
@@ -829,6 +829,29 @@ import Darwin
             // The runs the user's stop paused go on now that their stage is authorized again.
             for task in (try? plans.stoppedRuns(planId: id, jobs: store.jobs)) ?? [] { _ = try? store.resume(task) }
             return try reply(id, ["through": (out["scope"] as? [String: Any])?["through"] ?? through, "quote": quote])
+        case "add_request":
+            // Work the user asked for that the plan's stages don't cover: the next stage, authorized by their own message (their go-ahead). On 24 Oct
+            // Chief told the user to tap a "Get stage 7 done" that did not exist, then to type an approval phrase, then to paste their request again.
+            guard leads(actor) else { throw refused("Only the team's supervisor or the group's manager adds work to its plan.") }
+            let led = summaries.filter { BuddyPlanStore.live.contains($0["status"] as? String ?? "") && ($0["supervisorId"] as? String == actor || actor == supervisor) }
+            guard let plan = found ?? (led.count == 1 ? led[0] : nil) else {
+                throw BuddyPlanFailure(message: "There is no open plan to add this to here. Propose a plan with the user's request as its objective.", code: "not_found")
+            }
+            let id = plan["id"] as? String ?? "", quote = (args["quote"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if actor != nil, !BuddyPlanIntent.asks(text, quote: quote) {
+                throw refused("Add work only on the user's own request in their current message: quote has to copy one of its sentences word for word, and a question, a maybe or a later is not a request (answer it instead).")
+            }
+            let messageID = request["messageId"] as? String ?? args["messageId"] as? String ?? ""
+            // Their current message may point to an earlier one (“go ahead with my 12 items”): that message, copied whole, is the stage's scope, and
+            // only if the user really wrote it in a chat; the go-ahead is still their current message.
+            var words = actor == nil ? (args["request"] as? String ?? quote) : text
+            if actor != nil, let earlier = (args["request"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !earlier.isEmpty, earlier != text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                guard earlier.count >= 20, Self.userWrote(earlier, in: state) else { throw refused("request has to be one of the user's own messages in a chat, copied word for word.") }
+                words = earlier + "\n\n(Their go-ahead: “\(text.trimmingCharacters(in: .whitespacesAndNewlines))”)"
+            }
+            let n = try plans.addRequest(planId: id, stage: args["stage"] as? [String: Any] ?? [:], request: words, quote: quote, messageId: messageID, by: actor ?? "user")
+            for task in (try? plans.stoppedRuns(planId: id, jobs: store.jobs)) ?? [] { _ = try? store.resume(task) }
+            return try reply(id, ["stage": n, "through": n, "quote": quote, "started": true])
         case "revise":
             let plan = try existing(), id = plan["id"] as? String ?? ""
             guard leads(actor) else { throw refused("Only the team's supervisor or the group's manager revises its plan.") }
@@ -855,7 +878,7 @@ import Darwin
             }
             return try reply(id, ["paused": paused])
         default:
-            throw BuddyPlanFailure(message: "Choose get, propose, authorize, revise, answer or stop.", code: "invalid_input")
+            throw BuddyPlanFailure(message: "Choose get, propose, authorize, add_request, revise, answer or stop.", code: "invalid_input")
         }
     }
     /// A plan edit to a task already handed out reaches the work it changes: the new brief, deliverable or title is added to the worker task's
@@ -3202,7 +3225,7 @@ import Darwin
             let choice = d["choice"] as? String ?? "", why = d["rationale"] as? String ?? "", title = d["title"] as? String ?? ""
             guard !lead.isEmpty, !teammate.isEmpty, lead != teammate, !at.isEmpty else { return nil }
             var row: [String: Any] = ["id": "plan:" + (d["id"] as? String ?? ""), "fromAgentId": teammate, "toAgentId": lead, "title": title, "status": "completed",
-                                      "createdAt": at, "startedAt": at, "finishedAt": at, "error": ""]
+                                      "createdAt": at, "startedAt": at, "finishedAt": at, "error": "", "groupId": d["groupId"] as? String ?? ""]
             if kind == "answer" {
                 row["kind"] = "question"; row["question"] = d["question"] ?? ""; row["body"] = choice; row["detail"] = why
                 return row
@@ -3219,6 +3242,33 @@ import Darwin
             if let ended = attempt?.endedAt, ended <= at { row["createdAt"] = ended; row["startedAt"] = ended }
             return row
         }
+    }
+    /// Whether the user wrote `words` (whole, or as a stretch of one message) in one of their saved chat messages.
+    static func userWrote(_ words: String, in state: [String: Any]) -> Bool {
+        let wanted = words.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return ((state["messages"] as? [String: [[String: Any]]]) ?? [:]).values.contains { chat in
+            chat.contains { $0["who"] as? String == "you" && $0["live"] as? Bool == true && ($0["body"] as? String ?? "").replacingOccurrences(of: "\r\n", with: "\n").contains(wanted) }
+        }
+    }
+    /// The plan's handoffs: each time a plan task went to a teammate (its first start, or another teammate taking it over), the supervisor's brief
+    /// for it, as the supervisor's message to that teammate ("Chief → Forge: …"); the group chat shows these beside the replies.
+    private func planHandoffs() -> [[String: Any]] {
+        guard UUID(uuidString: workspace) != nil, let tasks = try? plans.handedOut(workspace: workspace) else { return [] }
+        var out: [[String: Any]] = []
+        for task in tasks {
+            let id = task["id"] as? String ?? "", lead = task["supervisorId"] as? String ?? ""
+            let runs = store.jobs.filter { ($0["requestId"] as? String ?? "").hasPrefix("plan:\(id):") }.sorted { ($0["createdAt"] as? String ?? "") < ($1["createdAt"] as? String ?? "") }
+            var previous = ""
+            for job in runs {
+                let agent = job["agentId"] as? String ?? "", at = job["createdAt"] as? String ?? ""
+                defer { previous = agent }
+                guard !agent.isEmpty, agent != previous, agent != lead, !lead.isEmpty, !at.isEmpty else { continue }
+                out.append(["id": "handoff:" + (job["id"] as? String ?? ""), "kind": "handoff", "fromAgentId": lead, "toAgentId": agent, "title": task["title"] ?? "",
+                            "question": String((task["brief"] as? String ?? "").prefix(4000)), "body": "", "detail": "", "status": "completed",
+                            "createdAt": at, "startedAt": at, "finishedAt": at, "error": "", "groupId": task["groupId"] ?? ""])
+            }
+        }
+        return out
     }
     /// A result's message to the user: the text before its first line of three dashes (the details for the team, and Buddy's receipts, follow it).
     static func message(of result: String) -> String {
