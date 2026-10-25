@@ -1102,10 +1102,12 @@ import Foundation
                 // runs of it run and ended, a third is refused, so the how has to change. (Restarts that never started are the no-progress breaker's.)
                 // Only what happened since the user last decided something about the plan counts: their answer can change how the work is done (25
                 // Oct: the user approved another way, and Chief's restart with it was refused on the strength of the attempts before).
+                // The plan's decisions come newest first, so those before the user's latest are the ones since it (by the order they were saved:
+                // times to the second can't tell apart an answer and a restart in the same second).
                 let decided = ((try? plans.decisions(planId: item.planId, limit: 60)) ?? [])
-                let userSaid = decided.filter { $0["by"] as? String == "user" && ["user_answer", "objective", "scope"].contains($0["kind"] as? String ?? "") }.compactMap { $0["at"] as? String }.max() ?? ""
-                let hourAgo = max(Self.stamp(Date().addingTimeInterval(-3600)), userSaid)
-                let again = decided.filter {
+                let fromUser = { (d: [String: Any]) in d["by"] as? String == "user" && ["user_answer", "objective", "scope"].contains(d["kind"] as? String ?? "") }
+                let hourAgo = Self.stamp(Date().addingTimeInterval(-3600))
+                let again = decided.prefix { !fromUser($0) }.filter {
                     $0["kind"] as? String == "reassign" && $0["by"] as? String == supervisor.id && $0["taskId"] as? String == item.planTaskId && $0["choice"] as? String == assignee && ($0["at"] as? String ?? "") >= hourAgo
                 }.count
                 let ended = store.jobs.filter {
