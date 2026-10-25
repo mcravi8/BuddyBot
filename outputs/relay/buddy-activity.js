@@ -18,8 +18,10 @@
   // Something waiting for the supervisor (a result to review, a question an agent asked) is Chief's to handle, not the person's, however long
   // it waits: it is listed only while the supervisor lane is not running. One Chief cannot move reaches the person as a "the team is stuck"
   // notice. (After 15 minutes such items used to be listed too, and the user's Needs you filled with results Chief had left days before.)
+  // Each item waits for its own supervisor's lane: a project's Chief, or the team's supervisor.
   function forSupervisor(d,worker){
-    return d.audience==='supervisor'&&worker.supervisorLane?.online===true;
+    const lane=(d.supervisorId&&worker.supervisorLanes?.[d.supervisorId])||worker.supervisorLane;
+    return d.audience==='supervisor'&&lane?.online===true;
   }
   function collect(state,worker={},team={},now=Date.now()){
     const agents=new Set((state.agents||[]).map(a=>a.id)),groups=new Set((state.groups||[]).map(g=>g.id)),items=[];

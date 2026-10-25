@@ -145,6 +145,11 @@ test('the agents that need the person are exactly those with an unread "needs yo
  assert.deepEqual([...A.needingAgents(A.collect({...state,activityDismissed:{'decision:b':true}},worker))],['inbox'],'nor a dismissed one');
  const lane={...worker,supervisorLane:{online:true},decisions:[d('c',{audience:'supervisor',createdAt:new Date().toISOString()})]};
  assert.deepEqual([...A.needingAgents(A.collect(state,lane))],[],'nor one the supervisor is handling');
+ // A project's own Chief has its own lane: its item waits for that lane, whatever the team's lane is doing.
+ const projectDown={...worker,supervisorLane:{online:true},supervisorLanes:{lyra:{online:false}},decisions:[d('p',{audience:'supervisor',supervisorId:'lyra',createdAt:new Date().toISOString()})]};
+ assert.deepEqual([...A.needingAgents(A.collect(state,projectDown))],['inbox'],'an item for a project Chief whose lane is down reaches the person');
+ const projectUp={...projectDown,supervisorLane:{online:false},supervisorLanes:{lyra:{online:true}}};
+ assert.deepEqual([...A.needingAgents(A.collect(state,projectUp))],[],'and waits for that Chief while its lane runs, though the team lane is down');
  assert.deepEqual([...A.needingAgents(A.collect(state,{workspace:'w',tasks:[{id:'t',agentId:'inbox',status:'completed'}],decisions:[]}))],[],'a finished result is not something that needs the person');
 });
 test('a task waiting for a sign-in is a Needs card that opens the agent’s chat at its request; a routine command review waits for the supervisor unless the lane is offline',()=>{

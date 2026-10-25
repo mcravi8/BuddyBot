@@ -11,6 +11,8 @@ import Darwin
     private var supervisor: BuddySupervisorLane!
     private var lastLoopAt = Date.distantPast
     private var laneTicking = false
+    /// The supervision lanes of projects with a Chief of their own (not the team's supervisor), by that Chief's id.
+    private var chiefLanes: [String: BuddySupervisorLane] = [:]
     /// Held while work runs or an authorized stage has live work, so the Mac does not sleep through it.
     private var awake: NSObjectProtocol?
     /// Since when nothing has run, queued or waited for a retry in the workspace (the pulse's `idleSince`).
@@ -103,15 +105,7 @@ import Darwin
             _ = try store.breakAllLeases()
             monitor=try BuddyTeamMonitor(support:support,makeClaude:makeCoding,makeGPT:{ConversationService(support:self.support,executable:self.executableOverride)},keyReader:keyReader)
             monitor.planConversations={[weak self] in (self?.planExchanges() ?? []) + (self?.planHandoffs() ?? [])}
-            supervisor = BuddySupervisorLane(support: support, store: store, plans: plans, makeClaude: makeCoding, makeGPT: { [support, executableOverride] in ConversationService(support: support, executable: executableOverride) }, keyReader: keyReader,
-                                             hooks: .init(stopTask: { [weak self] id, cause in await self?.stop(id, status: "cancelled", cause: cause) },
-                                                          taskFiles: { [weak self] id in self?.taskFiles(id) ?? [] },
-                                                          answerReview: { [weak self] id, review, accept, lead, name, reason in
-                                                              guard let self else { throw BuddyWorkerFailure(message: "Worker stopped.") }
-                                                              try self.supervisorAnswer(id, review: review, accept: accept, supervisor: lead, name: name, reason: reason) },
-                                                          forwardReview: { [weak self] id, review, lead, name, note in
-                                                              guard let self else { throw BuddyWorkerFailure(message: "Worker stopped.") }
-                                                              try self.supervisorForward(id, review: review, supervisor: lead, name: name, note: note) }))
+            supervisor = makeLane(fixed: nil)
             try listen()
             // Programs a coding session left running before this worker started are told to the task that carries that work on.
             noteLeftovers(closing: false)
@@ -143,6 +137,19 @@ import Darwin
             NSApp.terminate(nil)
         }
     }
+    /// A supervision lane: the team's (`fixed` nil), or a project Chief's. Every lane answers reviews and directs work the same way.
+    private func makeLane(fixed: String?) -> BuddySupervisorLane {
+        BuddySupervisorLane(support: support, store: store, plans: plans, makeClaude: makeCoding, makeGPT: { [support, executableOverride] in ConversationService(support: support, executable: executableOverride) }, keyReader: keyReader,
+                            hooks: .init(stopTask: { [weak self] id, cause in await self?.stop(id, status: "cancelled", cause: cause) },
+                                         taskFiles: { [weak self] id in self?.taskFiles(id) ?? [] },
+                                         answerReview: { [weak self] id, review, accept, lead, name, reason in
+                                             guard let self else { throw BuddyWorkerFailure(message: "Worker stopped.") }
+                                             try self.supervisorAnswer(id, review: review, accept: accept, supervisor: lead, name: name, reason: reason) },
+                                         forwardReview: { [weak self] id, review, lead, name, note in
+                                             guard let self else { throw BuddyWorkerFailure(message: "Worker stopped.") }
+                                             try self.supervisorForward(id, review: review, supervisor: lead, name: name, note: note) }),
+                            fixed: fixed)
+    }
     func applicationWillTerminate(_ notification: Notification) {
         // What is under way stays as it was saved: the next worker finds it interrupted by the restart and continues it by itself. Closing the
         // model bridges below must not be recorded as the connection failing.
@@ -151,7 +158,7 @@ import Darwin
         if store != nil { noteLeftovers(closing: true) }
         // A lease stays as recorded; the next worker brings its command's results back and tears it down.
         leases?.shutdown()
-        timer?.invalidate(); supervisor?.shutdown(); holdAwake(false); monitor?.shutdown()
+        timer?.invalidate(); supervisor?.shutdown(); for lane in chiefLanes.values { lane.shutdown() }; holdAwake(false); monitor?.shutdown()
         for run in runs.values { run.service?.shutdown() }
         browser?.close()
         for run in runs.values { run.claude?.close(); run.codingShell?.close() }
@@ -395,6 +402,11 @@ import Darwin
             reply["running"] = runs.values.filter { $0.workspace == current }.sorted { $0.startedAt < $1.startedAt }.map(\.id)
             reply["plans"] = (try? plans.summary(workspace: current, jobs: store.jobs, names: team.map(Self.names) ?? [:])) ?? []
             reply["supervisorLane"] = supervisor.status
+            // Each supervisor's own lane (a project's Chief, and the team's), so the page knows whose items wait for a lane that runs.
+            var lanes: [String: Any] = [:]
+            if let lead = (try? state()).flatMap({ teamSupervisor($0) }) { lanes[lead] = supervisor.status }
+            for (id, lane) in chiefLanes { lanes[id] = lane.status }
+            reply["supervisorLanes"] = lanes
             // What the chats ask the person for (a password or code to type, a step to finish and confirm with Done), the agents that
             // use the shared browser, and any window an earlier version left open in an agent's old profile.
             reply["signinRequests"] = signInRequests(current)
@@ -710,6 +722,39 @@ import Darwin
         guard let id = (try? monitor.store.policy(state))?["supervisorId"] as? String, !id.isEmpty, (state["agents"] as? [[String: Any]] ?? []).contains(where: { $0["id"] as? String == id }) else { return nil }
         return id
     }
+    /// A project's own Chief: the agent the user chose for a group (`chiefId`), while it is still in the workspace.
+    static func projectChief(_ group: [String: Any]?, state: [String: Any]) -> String? {
+        guard let id = group?["chiefId"] as? String, !id.isEmpty, (state["agents"] as? [[String: Any]] ?? []).contains(where: { $0["id"] as? String == id }) else { return nil }
+        return id
+    }
+    /// Who supervises a group's work: its own Chief, else the team's supervisor.
+    private func chief(ofGroup id: String, state: [String: Any]) -> String? {
+        Self.projectChief((state["groups"] as? [[String: Any]] ?? []).first { $0["id"] as? String == id }, state: state) ?? teamSupervisor(state)
+    }
+    /// Every agent that supervises something: the team's supervisor and each project's own Chief.
+    private func supervisors(_ state: [String: Any]) -> Set<String> {
+        var out = Set((state["groups"] as? [[String: Any]] ?? []).compactMap { Self.projectChief($0, state: state) })
+        if let lead = teamSupervisor(state) { out.insert(lead) }
+        return out
+    }
+    /// The supervision lane a supervisor's work goes through: a project Chief's own, else the team's.
+    private func lane(of lead: String) -> BuddySupervisorLane { chiefLanes[lead] ?? supervisor }
+    /// Keeps one lane per project Chief who is not the team's supervisor, and each live plan supervised by its project's Chief (else the
+    /// team's supervisor). A plan whose Chief changes takes its open tasks along, so their results, questions and reviews go to the new one.
+    private func followChiefs(_ state: [String: Any], workspace: String) {
+        let team = teamSupervisor(state), chiefs = supervisors(state).subtracting(team.map { [$0] } ?? [])
+        for (id, lane) in chiefLanes where !chiefs.contains(id) { lane.shutdown(); chiefLanes[id] = nil }
+        for id in chiefs where chiefLanes[id] == nil { chiefLanes[id] = makeLane(fixed: id) }
+        supervisor.elsewhere = chiefs
+        guard UUID(uuidString: workspace) != nil else { return }
+        for plan in (try? plans.leadership(workspace: workspace)) ?? [] {
+            guard let lead = chief(ofGroup: plan.group, state: state), lead != plan.supervisor, (try? plans.setSupervisor(planId: plan.plan, to: lead)) == true else { continue }
+            let id = plan.plan
+            for job in store.jobs where job["planId"] as? String == id && !BuddyWorkerStore.terminal.contains(job["status"] as? String ?? "") {
+                if let task = job["id"] as? String { _ = try? store.update(task, ["supervisorId": lead, "reportsTo": lead]) }
+            }
+        }
+    }
     /// Stops someone other than the task's own agent (its supervisor or manager) may continue: technical ones, never a question or a person's choice.
     /// A result that could not be verified goes to the supervisor, who may carry it on.
     static let technicalStops: Set<String> = ["stall", "bridge.closed", "provider.error", "max_turns", "worker.restart", "orphaned", "legacy", "result.incomplete"]
@@ -736,7 +781,7 @@ import Darwin
         var out: Set<String> = [actor]
         guard let state = try? state() else { return out }
         out.formUnion(BuddyTeamMonitor.managed(by: actor, in: state))
-        guard actor == teamSupervisor(state) else { return out }
+        guard supervisors(state).contains(actor) else { return out }
         let groups = state["groups"] as? [[String: Any]] ?? []
         for plan in (try? plans.plans(supervisedBy: actor, workspace: workspace)) ?? [] {
             out.formUnion(groups.first { $0["id"] as? String == plan["groupId"] as? String }?["members"] as? [String] ?? [])
@@ -748,7 +793,7 @@ import Darwin
     private func overseenPlans(_ actor: String, state: [String: Any], workspace: String) -> [[String: Any]]? {
         let groups = state["groups"] as? [[String: Any]] ?? [], managed = Set(groups.filter { $0["managedBy"] as? String == actor }.compactMap { $0["id"] as? String })
         let supervises = actor == teamSupervisor(state)
-        guard supervises || !managed.isEmpty || !BuddyTeamMonitor.managed(by: actor, in: state).isEmpty else { return nil }
+        guard supervises || !managed.isEmpty || supervisors(state).contains(actor) || !BuddyTeamMonitor.managed(by: actor, in: state).isEmpty else { return nil }
         let all = (try? plans.summary(workspace: workspace, jobs: store.jobs, names: Self.names(state))) ?? []
         return supervises ? all : all.filter { managed.contains($0["groupId"] as? String ?? "") || $0["supervisorId"] as? String == actor }
     }
@@ -782,7 +827,8 @@ import Darwin
         let group = groups.first { $0["id"] as? String == groupID }, members = group?["members"] as? [String] ?? []
         let manager = (group?["managedBy"] as? String).flatMap { names[$0] == nil ? nil : $0 }, supervisor = teamSupervisor(state)
         // The person, the team's supervisor, or the group's manager.
-        func leads(_ who: String?) -> Bool { guard let who else { return true }; return who == supervisor || who == manager }
+        let projectChief = Self.projectChief(group, state: state)
+        func leads(_ who: String?) -> Bool { guard let who else { return true }; return who == supervisor || who == manager || who == projectChief }
         func existing() throws -> [String: Any] { guard let found else { throw BuddyPlanFailure(message: "This group has no open plan. Propose one first.", code: "not_found") }; return found }
         // Replies carry the plan summary (contract C-7) with live task state, never the task briefs.
         func reply(_ id: String, _ receipt: [String: Any]) throws -> [String: Any] {
@@ -805,7 +851,7 @@ import Darwin
         case "propose":
             guard leads(actor) else { throw refused("Only the team's supervisor or the group's manager proposes its plan.") }
             guard group != nil else { throw BuddyPlanFailure(message: "Choose the group this plan is for.", code: "invalid_input") }
-            let out = try plans.propose(workspace: current, groupId: groupID, supervisorId: supervisor ?? manager ?? actor ?? "", objective: args["objective"] as? String ?? "",
+            let out = try plans.propose(workspace: current, groupId: groupID, supervisorId: chief(ofGroup: groupID, state: state) ?? manager ?? actor ?? "", objective: args["objective"] as? String ?? "",
                                         stages: args["stages"] as? [[String: Any]] ?? [], tasks: args["tasks"] as? [[String: Any]] ?? [], members: members, by: actor ?? "user", team: state["agents"] as? [[String: Any]] ?? [])
             var result = try reply(out["id"] as? String ?? "", ["status": "draft", "revision": out["revision"] ?? 1, "keys": out["keys"] ?? [String: String](), "corrections": out["corrections"] ?? [String]()])
             result["menu"] = out["menu"] ?? ""
@@ -2137,7 +2183,12 @@ import Darwin
         leases?.tick(task: { id in try? self.store.job(id) }, live: Set(runs.keys).union(launching.keys))
         ticking = false
         // The supervisor lane runs beside these checks, never inside them: a long review must not hold up watching the running tasks.
-        if let current, !laneTicking { laneTicking = true; Task { [weak self] in await self?.supervisor.tick(state: current, now: now); self?.laneTicking = false } }
+        if let current, !laneTicking {
+            followChiefs(current, workspace: space)
+            laneTicking = true
+            let lanes = [supervisor!] + chiefLanes.keys.sorted().compactMap { chiefLanes[$0] }
+            Task { [weak self] in for lane in lanes { await lane.tick(state: current, now: now) }; self?.laneTicking = false }
+        }
         holdAwake(!runs.isEmpty || !launching.isEmpty || leases?.busy == true || ((try? plans.hasLiveWork(workspace: space)) ?? false))
         dispatch()
     }
@@ -2870,7 +2921,7 @@ import Darwin
     /// way), else the team's supervisor (not the agent's own request), which it waits for while the supervisor's lane can't run, else the person.
     private func serviceRoute(_ service: BuddyConnectedService, job: [String: Any]) -> String {
         guard let lead = job["supervisorId"] as? String, !lead.isEmpty, lead != job["agentId"] as? String,
-              (try? state()).flatMap({ teamSupervisor($0) }) == lead else { return "user" }
+              (try? state()).map({ supervisors($0).contains(lead) }) == true else { return "user" }
         // One that can charge money is on the person's list: the supervisor looks first (see `screens`).
         return service.charges ? (screens(lead, job) ? "screen" : "user") : "supervisor"
     }
@@ -3699,7 +3750,7 @@ import Darwin
         // the user seven times on 23 Oct because Buddy could not read them. Without a team supervisor, the person decides. While the supervisor's
         // lane can't run (a failing run, a disconnected provider, a used-up daily limit) the review waits for it, and the person is told once
         // what is wrong with it: on 24 Oct a briefing too big for a ChatGPT run took supervision down and every review went to the person.
-        guard let lead = job["supervisorId"] as? String, !lead.isEmpty, (try? state()).flatMap({ teamSupervisor($0) }) == lead else { return "user" }
+        guard let lead = job["supervisorId"] as? String, !lead.isEmpty, (try? state()).map({ supervisors($0).contains(lead) }) == true else { return "user" }
         if verdict.forPerson { return screens(lead, job) ? "screen" : "user" }
         if verdict.routine, lead == job["agentId"] as? String { return "auto" }
         return "supervisor"
@@ -3709,7 +3760,7 @@ import Darwin
     /// LibreOffice for a .doc that Word, already on the Mac, saves itself. Not the supervisor's own request (it already chose it), and only while
     /// its lane runs; one it hasn't looked at within `screenWait` goes to the person as it is.
     private func screens(_ lead: String, _ job: [String: Any]) -> Bool {
-        lead != job["agentId"] as? String && supervisor.status["online"] as? Bool == true
+        lead != job["agentId"] as? String && lane(of: lead).status["online"] as? Bool == true
     }
     static var screenWait: TimeInterval = 10 * 60
     /// What Buddy read in the command, kept on its review: for scripts also each one's place, size and hash (checked again before it runs) and

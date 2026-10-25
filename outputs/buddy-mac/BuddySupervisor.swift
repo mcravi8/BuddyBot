@@ -118,9 +118,15 @@ import Foundation
     private var process: BuddyWorkerProcess?
     private var current: Run?
 
+    /// A project's own Chief this lane supervises for (the agent the user chose for a group), or nil for the team's supervisor, read from the
+    /// team settings. Only the team's lane watches for files the user saved and recovers runs cut short.
+    let fixed: String?
+    /// The supervisors other lanes work for: the team's lane leaves their plans and tasks to them and takes everything else.
+    var elsewhere: Set<String> = []
+
     init(support: URL, store: BuddyWorkerStore, plans: BuddyPlanStore, makeClaude: @escaping () -> BuddyWorkerProcess, makeGPT: (() -> ConversationService)? = nil,
-         keyReader: @escaping (String) -> String?, hooks: Hooks) {
-        self.support = support; self.store = store; self.plans = plans; self.makeClaude = makeClaude; self.makeGPT = makeGPT; self.keyReader = keyReader; self.hooks = hooks
+         keyReader: @escaping (String) -> String?, hooks: Hooks, fixed: String? = nil) {
+        self.support = support; self.store = store; self.plans = plans; self.makeClaude = makeClaude; self.makeGPT = makeGPT; self.keyReader = keyReader; self.hooks = hooks; self.fixed = fixed
         var opened: BuddyOperationsDB?
         do {
             let db = try BuddyOperationsDB(directory: store.directory)
@@ -184,7 +190,7 @@ import Foundation
     func tick(state: [String: Any], now: Date) async {
         lastTick = now; tickedAt = Date()
         // A file the user was asked for that is now where it goes starts its work again, whatever else the lane is doing.
-        if let workspace = state["conversationWorkspace"] as? String, UUID(uuidString: workspace) != nil { watchArrivals(workspace: workspace, now: now) }
+        if fixed == nil, let workspace = state["conversationWorkspace"] as? String, UUID(uuidString: workspace) != nil { watchArrivals(workspace: workspace, now: now) }
         if busy {
             if let run = current, now.timeIntervalSince(run.started) > Self.runTimeout { finish(run.id, text: "", error: "The supervisor took more than 5 minutes; it tries again in a minute.", cost: nil) }
             return
@@ -231,6 +237,7 @@ import Foundation
         }
         online = true
         if gated { gated = false; lastError = "" }
+        if !recovered, fixed != nil { recovered = true }
         if !recovered {
             recovered = true; busy = true
             await recover(db, supervisor: supervisor, state: state)
@@ -290,8 +297,14 @@ import Foundation
         }
     }
 
-    /// The team's supervisor: the agent named in the team check-in policy for this workspace, if it still exists.
+    /// The team's supervisor: the agent named in the team check-in policy for this workspace, if it still exists; for a project's lane, that
+    /// project's Chief.
     private func supervisor(_ state: [String: Any], workspace: String) -> Supervisor? {
+        if let fixed {
+            guard let agent = (state["agents"] as? [[String: Any]] ?? []).first(where: { $0["id"] as? String == fixed }) else { return nil }
+            let name = (agent["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return Supervisor(id: fixed, name: name.isEmpty ? "the supervisor" : name)
+        }
         guard let data = try? Data(contentsOf: support.appendingPathComponent("team-monitor.json")), data.count < 24 * 1024 * 1024,
               let saved = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let id = ((saved["settings"] as? [String: Any])?[workspace] as? [String: Any])?["supervisorId"] as? String, !id.isEmpty,
@@ -307,7 +320,10 @@ import Foundation
     /// forwarded to the user or gave up on are left out. One run takes up to 8 items of one plan (or of work outside any plan).
     private func collect(workspace: String, supervisor: Supervisor, db: BuddyOperationsDB) -> [Item] {
         var items: [Item] = []
-        for raw in (try? plans.workItems(workspace: workspace)) ?? [] {
+        // Each lane takes its own supervisor's plans and tasks; the team's lane also takes any whose supervisor has no lane of its own.
+        let leads = (try? plans.supervisors(workspace: workspace)) ?? [:]
+        func owns(_ lead: String) -> Bool { fixed != nil ? lead == supervisor.id : lead == supervisor.id || lead.isEmpty || !elsewhere.contains(lead) }
+        for raw in (try? plans.workItems(workspace: workspace)) ?? [] where owns(leads[raw["planId"] as? String ?? ""] ?? "") {
             var item = Item()
             item.key = raw["key"] as? String ?? ""; item.kind = raw["kind"] as? String ?? ""; item.planId = raw["planId"] as? String ?? ""
             item.stageId = raw["stageId"] as? String ?? ""; item.planTaskId = raw["taskId"] as? String ?? ""; item.workerTaskId = raw["workerTaskId"] as? String ?? ""
@@ -317,7 +333,7 @@ import Foundation
         }
         for decision in (try? store.openDecisions(workspace: workspace)) ?? [] where decision["audience"] as? String == "supervisor" {
             let kind = ["waiting": "question", "stopped": "stopped", "paused": "paused", "command_review": "command_review"][decision["kind"] as? String ?? ""]
-            guard let kind, let id = decision["taskId"] as? String, let job = try? store.job(id) else { continue }
+            guard let kind, let id = decision["taskId"] as? String, let job = try? store.job(id), owns(job["supervisorId"] as? String ?? "") else { continue }
             let checkpoint = job["checkpoint"] as? [String: Any]
             if kind == "question" { guard job["status"] as? String == "waiting_user", checkpoint?["routedTo"] as? String == "supervisor" else { continue } }
             // A command review is the supervisor's only while it still waits and Buddy routed it there.

@@ -987,5 +987,43 @@ import Foundation
         await tick(reopened)
         require(calls(reopened).count == 8, "after a restart the lane asks Chief about the task again: \(calls(reopened).count)")
         print("PASS: a supervisor whose decisions on a task take effect but change nothing (every start refused) is asked about it three times, then not again, and the user gets one notice saying what kept happening; the task is left waiting, and the lane asks again once anything happens to its work or after a restart")
+
+        // 21. A project with its own Chief (24 Oct: the user asked whether each project can have its own Chief). Each Chief's lane takes only
+        // its own plan's work: the team's lane leaves Lyra's project to Lyra's lane, and Lyra's lane never sees Chief's.
+        let lyra = "66666666-6666-4666-8666-666666666666", group2 = "77777777-7777-4777-8777-777777777777"
+        var chiefsState = state
+        chiefsState["agents"] = (state["agents"] as? [[String: Any]] ?? []) + [["id": lyra, "name": "Lyra", "role": "Research lead"]]
+        chiefsState["groups"] = (state["groups"] as? [[String: Any]] ?? []) + [["id": group2, "name": "Lit review", "members": [lyra, forge], "chiefId": lyra]]
+        let chiefs = try world(base, "chiefs")
+        try mode(chiefs, "hold")
+        try BuddyAgentModels(support: chiefs.root).set(workspace: w, agent: lyra, selection: .init(provider: "claude", model: "fixture-lyra-model"))
+        try propose(chiefs)
+        _ = try step(chiefs)
+        try finish(chiefs.store, jobs(chiefs, "t1").first?["id"] as? String ?? "", result: "R1: the baseline reproduces.")
+        let litPlan = try chiefs.plans.propose(workspace: w, groupId: group2, supervisorId: lyra, objective: "Review the literature", stages: stages,
+                                               tasks: [["stage": 1, "key": "l1", "title": "Collect the papers", "assignee": forge, "kind": "research", "brief": "Collect the ten papers.", "deliverable": "papers.md"]], members: [lyra, forge], by: lyra)
+        let litID = litPlan["id"] as? String ?? "", l1 = (litPlan["keys"] as? [String: String])?["l1"] ?? ""
+        _ = try chiefs.plans.authorize(planId: litID, through: 1, quote: "get stage 1 done", messageId: "m-lit", viaButton: false, now: Date())
+        _ = try step(chiefs)
+        let litJob = chiefs.store.jobs.first { ($0["requestId"] as? String ?? "").hasPrefix("plan:\(l1):") }?["id"] as? String ?? ""
+        try chiefs.store.update(litJob, ["reportsTo": lyra, "supervisorId": lyra])
+        try finish(chiefs.store, litJob, result: "L1: the ten papers are collected.")
+        _ = try step(chiefs)
+        let lyraLane = BuddySupervisorLane(support: chiefs.root, store: chiefs.store, plans: chiefs.plans,
+                                           makeClaude: { BuddyWorkerProcess(resource: URL(fileURLWithPath: CommandLine.arguments[1]), runtime: URL(fileURLWithPath: CommandLine.arguments[2])) },
+                                           makeGPT: nil, keyReader: { _ in "fixture-key" }, hooks: .init(stopTask: { _, _ in }, taskFiles: { _ in [] }), fixed: lyra)
+        chiefs.lane.elsewhere = [lyra]
+        await tick(chiefs, state: chiefsState)
+        chiefs.now = chiefs.now.addingTimeInterval(120)
+        await lyraLane.tick(state: chiefsState, now: chiefs.now)
+        for _ in 0..<600 where lyraLane.status["busy"] as? Bool == true { try? await Task.sleep(nanoseconds: 20_000_000) }
+        let byModel = Dictionary(grouping: calls(chiefs), by: { $0["model"] as? String ?? "" }).mapValues { $0.flatMap { $0["items"] as? [String] ?? [] } }
+        let ownT1 = chiefs.keys["t1"] ?? ""
+        require((byModel["fixture-chief-model"] ?? []).contains { $0.contains(ownT1) } && !(byModel["fixture-chief-model"] ?? []).contains { $0.contains(l1) },
+                "the team's Chief gets its own project's result and not Lyra's: \(byModel["fixture-chief-model"] ?? [])")
+        require((byModel["fixture-lyra-model"] ?? []).contains { $0.contains(l1) } && !(byModel["fixture-lyra-model"] ?? []).contains { $0.contains(ownT1) },
+                "Lyra's lane gets her project's result and not Chief's: \(byModel["fixture-lyra-model"] ?? [])")
+        lyraLane.shutdown()
+        print("PASS: a project with its own Chief: each Chief's lane takes only its own plan's work, and the team's lane leaves that project to its Chief")
     }
 }

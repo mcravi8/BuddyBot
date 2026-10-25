@@ -172,7 +172,8 @@ struct BuddyTeamRequest: Sendable {
             lines.append(line); total += line.utf8.count
         }
         let history = (lines.count < recent.count ? "(Earlier messages of this group are not shown.)\n\n" : "") + lines.reversed().joined(separator: "\n\n")
-        let manager = (group["managedBy"] as? String).flatMap { ids.contains($0) ? $0 : nil }
+        // The project's own Chief, when the user chose one and it is in the group, leads the group's reply; else the group's manager.
+        let manager = [group["chiefId"], group["managedBy"]].compactMap { $0 as? String }.first { ids.contains($0) }
         return BuddyTeamRequest(runId: run, key: workspace + ":" + groupId, workspace: workspace, groupId: groupId, name: name, objective: objective, text: text, members: members, history: history, supervisorId: manager)
     }
 }

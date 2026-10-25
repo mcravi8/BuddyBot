@@ -558,6 +558,23 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         let chats: [String: Any] = ["messages": ["g": [["id": "u1", "who": "you", "live": true, "body": "Final revision round on version 09564456.\r\n1. Conclusions: remove all numbers."], ["id": "a1", "who": "agent", "live": true, "body": "Agent words that look like a request."]]]]
         require(BuddyWorkerHost.userWrote("Final revision round on version 09564456.\n1. Conclusions: remove all numbers.", in: chats) && !BuddyWorkerHost.userWrote("Agent words that look like a request.", in: chats),
                 "only the user's own saved messages count as their request")
+        // A project with its own Chief (24 Oct): choosing Vera for the side group moves its live plan to her, with a supervision lane of her own;
+        // choosing the team's Chief again moves it back.
+        func chooseChief(_ id: String?) throws {
+            var saved = try JSONSerialization.jsonObject(with: Data(contentsOf: support.appendingPathComponent("workspace.json"))) as! [String: Any]
+            saved["groups"] = (saved["groups"] as? [[String: Any]] ?? []).map { g in var g = g; if g["id"] as? String == side { if let id { g["chiefId"] = id } else { g.removeValue(forKey: "chiefId") } }; return g }
+            try JSONSerialization.data(withJSONObject: saved).write(to: support.appendingPathComponent("workspace.json"), options: .atomic)
+        }
+        func sideLead() async throws -> String { ((try await plan(["action": "get", "planId": sideID]))["plan"] as? [String: Any])?["supervisorId"] as? String ?? "" }
+        try chooseChief(vera)
+        for _ in 0..<200 where try await sideLead() != vera { try await Task.sleep(nanoseconds: 50_000_000) }
+        let lanes = (try await raw(["operation": "status"]))["supervisorLanes"] as? [String: Any] ?? [:]
+        require(try await sideLead() == vera && lanes[vera] != nil && lanes[lead] != nil, "the project's own Chief supervises its plan, with a lane of her own beside the team's: \(lanes.keys.sorted())")
+        let veraEdits = try await plan(["action": "revise", "planId": sideID, "ops": [["op": "edit_stage", "stageId": ((try await plan(["action": "get", "planId": sideID]))["plan"] as? [String: Any]).flatMap { ($0["stages"] as? [[String: Any]])?.last?["id"] as? String } ?? "", "title": "Share widely"]]], actor: vera, text: "Rename the sharing stage")
+        require(veraEdits["error"] == nil, "the project's Chief revises its plan: \(veraEdits)")
+        try chooseChief(nil)
+        for _ in 0..<200 where try await sideLead() != lead { try await Task.sleep(nanoseconds: 50_000_000) }
+        require(try await sideLead() == lead, "with the team's Chief chosen again, the plan goes back to it")
         for id in [askID, signinID, generalID, t1Job] { _ = try await raw(["operation": "cancel", "taskId": id]) }
         _ = try await raw(["operation": "team", "arguments": ["action": "configure", "supervisorId": "", "enabled": true]])
         print("PASS: the team plan through the worker: only the supervisor proposes, only the user's words or tap authorize, the stage's first task is dispatched once inside the stage, the Mac stays awake while it is live, the person's stop pauses it, and authorizing the stage again lets that run go on")

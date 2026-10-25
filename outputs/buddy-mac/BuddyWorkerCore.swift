@@ -1340,6 +1340,8 @@ struct BuddyAttempt {
             item["title"] = row[4].string ?? ""; item["question"] = row[5].string ?? ""; item["actionLabel"] = row[6].string ?? ""
             item["payload"] = (try? BuddyOperationsDB.decode(row[7].string ?? "{}")) ?? [String: Any]()
             item["createdAt"] = row[8].string ?? ""; item["audience"] = row[9].string ?? "user"
+            // Whose lane a supervisor's item waits for (a project's own Chief, or the team's supervisor), so the page can tell whether it runs.
+            if item["audience"] as? String == "supervisor", let task = row[2].string, let lead = jobs.first(where: { $0["id"] as? String == task })?["supervisorId"] as? String { item["supervisorId"] = lead }
             out.append(item)
         }
         return out

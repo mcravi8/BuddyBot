@@ -19,6 +19,8 @@
   const api={mergeProfiles,deliver,compact,presentation};root.BuddyTeamMonitorUI=api;if(typeof module!=='undefined')module.exports=api;
   if(typeof document==='undefined')return;
   let snapshot={checks:[],updates:[],agents:{},profiles:[]},pending=false,error='',mounted=false;
+  // The team's Chief (its supervisor), for screens that offer it as the default.
+  api.teamChief=()=>snapshot.workspace===state.conversationWorkspace&&snapshot.supervisorId?{id:snapshot.supervisorId,name:snapshot.supervisorName||''}:null;
   let budgetWorkspace='',budgetDraft=null,budgetLoading=false,budgetSaving=false,budgetError='',budgetGeneration=0;
   const native=()=>!!window.BuddyDesktop?.worker;
   const request=arguments_=>{if(!native())throw Error('Open Buddy for Mac to use team check-ins.');return BuddyDesktop.worker({operation:'team',arguments:arguments_});};

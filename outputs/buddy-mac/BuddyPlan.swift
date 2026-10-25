@@ -1161,6 +1161,19 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
              "at": Self.s(r, 6), "workerTaskId": Self.s(r, 7), "assignee": Self.s(r, 8), "title": Self.s(r, 9), "groupId": Self.s(r, 10)]
         }
     }
+    /// Who supervises each live plan of the workspace, by plan id.
+    func supervisors(workspace: String) throws -> [String: String] {
+        Dictionary(try leadership(workspace: workspace).map { ($0.plan, $0.supervisor) }) { first, _ in first }
+    }
+    /// Each live plan of the workspace with its group and supervisor.
+    func leadership(workspace: String) throws -> [(plan: String, group: String, supervisor: String)] {
+        try db.rows("SELECT id, group_id, supervisor_id FROM plans WHERE workspace = ? AND status IN ('draft', 'active', 'holding')", [.text(workspace)]).map { (Self.s($0, 0), Self.s($0, 1), Self.s($0, 2)) }
+    }
+    /// A plan's supervisor changes (the user chose another Chief for its project, or the team's supervisor changed). Returns whether it changed.
+    func setSupervisor(planId: String, to lead: String) throws -> Bool {
+        guard !lead.isEmpty else { return false }
+        return try db.run("UPDATE plans SET supervisor_id = ?, updated_at = ? WHERE id = ? AND supervisor_id <> ? AND status IN ('draft', 'active', 'holding')", [.text(lead), .text(Self.stamp()), .text(planId), .text(lead)]) == 1
+    }
     /// Each plan task that has been handed out, with what the supervisor wrote for it and the group it belongs to: the group chat shows it as the
     /// supervisor's message to the teammate.
     func handedOut(workspace: String, limit: Int = 300) throws -> [[String: Any]] {
