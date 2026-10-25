@@ -7,6 +7,8 @@
   const api={choice,lookup,label,groups};root.BuddyModels=api;if(typeof module!=='undefined')module.exports=api;
   if(typeof document==='undefined')return;
   let snapshot={models:[],agents:{},errors:{}},loading=false,loaded=false,saving='',error='',activeAgent='',generation=0,pending=null,lastLoad=0;
+  // The provider each agent is on now, for the AI provider settings' offer to move the whole team.
+  api.agentProviders=()=>(Array.isArray(state?.agents)?state.agents.map(a=>choice(snapshot,a.id)?.provider):[]).filter(Boolean);
   const native=()=>!!window.BuddyDesktop?.agentModels;
   const menu=document.createElement('div');menu.id='model-menu-root';document.body.append(menu);
   const selection=agent=>choice(snapshot,agent);
