@@ -1048,5 +1048,28 @@ import Foundation
                 && (shownStages.last?["tasks"] as? [[String: Any]] ?? []).allSatisfy { $0["brief"] == nil } && (shownStages.last?["request"] as? String ?? "").hasPrefix("Last cleanup on be8e8775"),
                 "finished stages are one line each, the open stage keeps its tasks (without briefs) and the start of the user's request")
         print("PASS: an agent's copy of a big plan fits what it can open: finished stages in one line each, the open stage in full")
+
+        // 23. 25 Oct: the fixed restart guard would have let Chief restart the export, but the item it had refused stayed stuck and the user was
+        // still told the team was stuck. After Buddy is updatedX, an item stuck because Buddy refused the supervisor's action is looked at once
+        // more, and its stuck notice closes; the same build does it only once.
+        let updatedX = try world(base, "updatedX")
+        try propose(updatedX)
+        let raw23 = try BuddyOperationsDB(directory: updatedX.worker, existing: true), refused23 = "result:fixture-task:1", at23 = ISO8601DateFormatter().string(from: Date())
+        try raw23.run("INSERT INTO supervisor_items(key, workspace, presented, state, last_run, updated_at, refusal) VALUES(?, ?, 3, 'stuck', 'run-x', ?, 'you already gave this task to the same teammate 2 times in the last hour')", [.text(refused23), .text(w), .text(at23)])
+        try raw23.run("INSERT INTO supervisor_items(key, workspace, presented, state, last_run, updated_at, refusal) VALUES('result:judgedX:1', ?, 3, 'stuck', 'run-y', ?, '')", [.text(w), .text(at23)])
+        _ = try updatedX.plans.addNotice(planId: updatedX.planID, kind: "stuck", text: "The team is stuck on the export.", chat: true, refs: ["itemKeys": [refused23], "subject": "task:x"])
+        let chiefLeadX = BuddySupervisorLane.Supervisor(id: chief, name: "Chief")
+        updatedX.lane.reopenRefusedAfterUpdate(raw23, supervisor: chiefLeadX, build: "build-1")
+        let reopenedX = try itemState(updatedX, refused23), judgedX = try itemState(updatedX, "result:judgedX:1")
+        let note23 = try raw23.rows("SELECT note FROM supervisor_items WHERE key = ?", [.text(refused23)]).first?.first?.string ?? ""
+        require(reopenedX.state == "open" && reopenedX.presented == 0 && note23.contains("Buddy has been updated since") && note23.contains("2 times in the last hour") && judgedX.state == "stuck",
+                "after an update the refused item is looked at again, with what was refused; one stuck on the supervisor's own judgement is not: \(reopenedX) \(judgedX)")
+        require(try notices(updatedX, "stuck").allSatisfy { $0["status"] as? String == "closed" }, "the user's stuck notice about it closes")
+        try raw23.run("UPDATE supervisor_items SET state = 'stuck', refusal = 'refused again' WHERE key = ?", [.text(refused23)])
+        updatedX.lane.reopenRefusedAfterUpdate(raw23, supervisor: chiefLeadX, build: "build-1")
+        require(try itemState(updatedX, refused23).state == "stuck", "the same build reopens nothing a second time")
+        updatedX.lane.reopenRefusedAfterUpdate(raw23, supervisor: chiefLeadX, build: "build-2")
+        require(try itemState(updatedX, refused23).state == "open", "the next update does")
+        print("PASS: after Buddy is updated, an item stuck because Buddy refused the supervisor's action is looked at once more and its stuck notice closes")
     }
 }

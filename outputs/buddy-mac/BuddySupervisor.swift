@@ -797,6 +797,7 @@ import Foundation
         reopenStuckByFailures(db, supervisor: supervisor)
         reopenStuckForCodexSaves(db, supervisor: supervisor)
         reopenStuckForStageLimit(db, supervisor: supervisor)
+        reopenRefusedAfterUpdate(db, supervisor: supervisor, build: Self.build)
         reopenForAnsweredAllowance(db, supervisor: supervisor)
         rerouteOwnQuestions(supervisor: supervisor, workspace: state["conversationWorkspace"] as? String ?? "")
         for row in (try? db.rows("SELECT id, workspace, plan_id, items, output, status, started_at FROM supervisor_runs WHERE status IN ('running', 'applying') ORDER BY started_at")) ?? [] {
@@ -828,6 +829,33 @@ import Foundation
             }
         }
         try? plans.closeStuckNotices(runIds: Array(Set(rows.compactMap { $0[1].string })))
+    }
+
+    /// When this Buddy was built (its executable's date): a different one is an update.
+    static var build: String {
+        let path = Bundle.main.executablePath ?? CommandLine.arguments.first ?? ""
+        return stamp(((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date) ?? .distantPast)
+    }
+    /// After Buddy is updated, an item that stuck because Buddy kept refusing the supervisor's action (one of Buddy's own rules, not the
+    /// supervisor's judgement) is looked at once more, with what was refused, and the user's "stuck" notice about it closes: the update may
+    /// have changed that rule. On 25 Oct the fixed restart guard would have allowed Chief's restart, but the item stayed stuck and the user was
+    /// still told the team was stuck.
+    func reopenRefusedAfterUpdate(_ db: BuddyOperationsDB, supervisor: Supervisor, build: String) {
+        let key = "supervisor.reopened.refused-after-update"
+        if let seen = try? db.meta(key), seen == build { return }
+        let rows = (try? db.rows("SELECT key, refusal FROM supervisor_items WHERE state = 'stuck' AND refusal <> ''")) ?? []
+        let stamp = Self.stamp(Date())
+        for row in rows {
+            let item = row[0].string ?? "", refused = Self.clause(row[1].string ?? "")
+            let note = "Buddy refused your last action on this (\(refused)). Buddy has been updated since, so look at it again: what was refused may be allowed now."
+            _ = try? db.run("UPDATE supervisor_items SET state = 'open', presented = 0, refusal = '', reopened_at = ?, note = ?, updated_at = ? WHERE key = ? AND state = 'stuck'",
+                            [.text(stamp), .text(note), .text(stamp), .text(item)])
+            if (try? db.rows("SELECT 1 FROM decisions WHERE id = ? AND status = 'open'", [.text("stuck:\(item)")]))?.isEmpty == false {
+                try? store.resolveDecision(id: "stuck:\(item)", by: "supervisor:" + supervisor.id, resolution: "reopened")
+            }
+        }
+        if !rows.isEmpty { try? plans.closeStuckNotices(itemKeys: rows.compactMap { $0[0].string }) }
+        try? db.setMeta(key, build)
     }
 
     /// Once: plan work that stuck on the old limit of 12 tasks added to a stage, counted even when all of them were done (23 Oct: Stage 5's

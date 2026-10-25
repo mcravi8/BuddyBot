@@ -1098,6 +1098,10 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
         return id
     }
     /// Closes the "stuck" notices raised after these supervisor runs, once what they were about moves again.
+    /// Closes the open "stuck" notices about any of these supervisor items.
+    func closeStuckNotices(itemKeys: [String]) throws {
+        for key in itemKeys { try db.run("UPDATE plan_notices SET status = 'closed' WHERE kind = 'stuck' AND status = 'open' AND EXISTS (SELECT 1 FROM json_each(json_extract(refs, '$.itemKeys')) WHERE value = ?)", [.text(key)]) }
+    }
     func closeStuckNotices(runIds: [String]) throws {
         for id in runIds { try db.run("UPDATE plan_notices SET status = 'closed' WHERE kind = 'stuck' AND status = 'open' AND json_extract(refs, '$.runId') = ?", [.text(id)]) }
     }
