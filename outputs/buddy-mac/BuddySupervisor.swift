@@ -1100,8 +1100,12 @@ import Foundation
                 // Giving the same task to the same teammate again and again changes nothing (24 Oct: Chief restarted Forge's Word export twenty
                 // times in twenty minutes, each run ending the same way): after two such restarts in the last hour, with as many of that teammate's
                 // runs of it run and ended, a third is refused, so the how has to change. (Restarts that never started are the no-progress breaker's.)
-                let hourAgo = Self.stamp(Date().addingTimeInterval(-3600))
-                let again = ((try? plans.decisions(planId: item.planId, limit: 60)) ?? []).filter {
+                // Only what happened since the user last decided something about the plan counts: their answer can change how the work is done (25
+                // Oct: the user approved another way, and Chief's restart with it was refused on the strength of the attempts before).
+                let decided = ((try? plans.decisions(planId: item.planId, limit: 60)) ?? [])
+                let userSaid = decided.filter { $0["by"] as? String == "user" && ["user_answer", "objective", "scope"].contains($0["kind"] as? String ?? "") }.compactMap { $0["at"] as? String }.max() ?? ""
+                let hourAgo = max(Self.stamp(Date().addingTimeInterval(-3600)), userSaid)
+                let again = decided.filter {
                     $0["kind"] as? String == "reassign" && $0["by"] as? String == supervisor.id && $0["taskId"] as? String == item.planTaskId && $0["choice"] as? String == assignee && ($0["at"] as? String ?? "") >= hourAgo
                 }.count
                 let ended = store.jobs.filter {

@@ -871,6 +871,11 @@ import Foundation
         let again17 = try itemState(cancelled, "cancelled:\(t1):2")
         require(again17.state == "open" && again17.refusal.contains("restarting it again changes nothing") && jobs(cancelled, "t1").count == 2,
                 "a third restart to the same teammate within the hour is refused, and nothing new starts: \(again17) \(jobs(cancelled, "t1").count)")
+        // Once the user has decided something about the plan (here they approved another way to do it), the earlier attempts no longer count.
+        _ = try cancelled.plans.recordDecision(planId: where17?[0].string ?? "", kind: "user_answer", by: "user", question: "How should the export run?", choice: "Approved: use the other route.", rationale: "Approved.", stageId: where17?[1].string ?? "", taskId: t1, workerTaskId: "")
+        await tick(cancelled)
+        let after17 = try itemState(cancelled, "cancelled:\(t1):2"), status17 = try planTask(cancelled, "t1")["status"] as? String ?? "-"
+        require(after17.state == "handled" && status17 == "pending", "after the user's answer the restart goes through: \(after17) \(status17)")
         let forUser17 = try cancelled.store.openDecisions(workspace: w).filter { $0["audience"] as? String == "user" }, escalations17 = try notices(cancelled, "escalation")
         require(forUser17.isEmpty && escalations17.isEmpty, "nothing reaches the user: \(forUser17) \(escalations17)")
         print("PASS: a plan task whose run the user (or a teammate) cancelled is a supervisor item that says who cancelled it; a cancelled run cannot be resumed, so the lane starts the task again with its assignee and Buddy makes exactly one new worker task for the next dispatch; nothing reaches the user")
