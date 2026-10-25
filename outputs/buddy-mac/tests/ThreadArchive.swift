@@ -21,11 +21,16 @@ import Foundation
         /// What the person's ChatGPT/Codex apps list: every saved thread that isn't archived.
         func listed() -> [String] { home().filter { $0.value["archived"] as? Bool == false }.map(\.key).sorted() }
         func record() -> [String] { json("codex-threads-to-archive.json") as? [String] ?? [] }
-        func requests(_ thread: String) -> [String] {
+        func logged() -> [[String: Any]] {
             ((try? String(contentsOf: root.appendingPathComponent("codex-requests.jsonl"), encoding: .utf8)) ?? "").split(separator: "\n")
                 .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
-                .filter { ($0["params"] as? [String: Any])?["threadId"] as? String == thread }.compactMap { $0["method"] as? String }
         }
+        func requests(_ thread: String) -> [String] {
+            logged().filter { ($0["params"] as? [String: Any])?["threadId"] as? String == thread }.compactMap { $0["method"] as? String }
+        }
+        func params(_ method: String) -> [[String: Any]] { logged().filter { $0["method"] as? String == method }.compactMap { $0["params"] as? [String: Any] } }
+        /// The ChatGPT app never lists a thread with this label (ConversationService.hiddenThreadSource).
+        func hidden(_ thread: String) -> Bool { home()[thread]?["threadSource"] as? String == "chatgpt_hidden" }
         func settle(_ label: String, _ done: () -> Bool) async { for _ in 0..<250 where !done() { try? await Task.sleep(nanoseconds: 20_000_000) }; require(done(), label) }
         func start(_ text: String, key: String, background: Bool) throws -> String {
             let id = UUID().uuidString
@@ -46,6 +51,7 @@ import Foundation
         // 1. A chat reply runs in a saved thread (Buddy continues the chat in it), which leaves the person's list as soon as the reply is done.
         let chat = try await send("Hello")
         require(home()[chat]?["opened"] as? String == "start", "a chat reply runs in a saved thread: \(home())")
+        require(hidden(chat), "labelled for the ChatGPT app to keep off its sidebar, even while a reply is under way: \(home()[chat] ?? [:])")
         await settle("once the reply is done the chat's thread is archived, so the person's ChatGPT/Codex list doesn't show it: \(listed())") { listed().isEmpty && record().isEmpty }
 
         // 2. The next reply in that chat unarchives the thread and continues it: the same thread, its history kept.
@@ -53,6 +59,7 @@ import Foundation
         require(again == chat && home()[chat]?["turns"] as? Int == 2, "the chat continues in the same thread, which Codex resumes only once it is unarchived: \(again) \(home())")
         let methods = requests(chat)
         require((methods.firstIndex(of: "thread/unarchive") ?? .max) < (methods.firstIndex(of: "thread/resume") ?? -1), "it was unarchived before it was resumed: \(methods)")
+        require(!params("thread/resume").isEmpty && params("thread/resume").allSatisfy { $0["threadSource"] == nil } && hidden(chat), "a resumed thread keeps its label; thread/resume is sent none, since it takes none")
         await settle("and archived again once that reply is done: \(listed())") { listed().isEmpty && record().isEmpty }
 
         // 3. A background run (supervisor, check-in, memory) uses an ephemeral thread: never saved, so there is nothing to archive.
@@ -73,6 +80,7 @@ import Foundation
         restart()
         let forked = try await send("New connections")
         require(forked != chat && home()[forked]?["opened"] as? String == "fork" && home()[forked]?["from"] as? String == chat, "changed connections fork the chat into a new thread: \(home())")
+        require(hidden(forked), "the fork is labelled too, since Codex doesn't carry the label into a fork: \(home()[forked] ?? [:])")
         await settle("both the fork and the thread it copied are archived: \(listed())") { listed().isEmpty && record().isEmpty }
 
         // 6. A thread saved before Buddy archived its threads isn't archived: unarchiving it is refused, and it is continued as it is, then archived.
@@ -94,10 +102,11 @@ import Foundation
         let held = try start("HOLD: a long task", key: "workspace:forge", background: false)
         await settle("the long task's turn has started") { home().values.contains { $0["turns"] as? Int == 1 && $0["archived"] as? Bool == false } && listed().count == 1 }
         let open = listed()
+        require(hidden(open[0]), "a task's thread is labelled from the start, so the ChatGPT app doesn't list it while it works")
         service.close()
         await settle("closing archives the stopped task's thread before the connection ends: \(listed())") { listed().isEmpty && record().isEmpty }
         await settle("then the connection ends, ending the turn") { ended(held) != nil }
         require(requests(open[0]).last == "thread/archive", "the last thing asked of that thread was to archive it: \(requests(open[0]))")
-        print("PASS: background runs are ephemeral; chat and task threads are archived once their turn is over or their connection closes, unarchived to continue (after a restart and through a fork too), and threads left open are archived on the next connection")
+        print("PASS: background runs are ephemeral; chat and task threads are labelled for the ChatGPT app to keep off its sidebar (forks too), archived once their turn is over or their connection closes, unarchived to continue (after a restart and through a fork too), and threads left open are archived on the next connection")
     }
 }

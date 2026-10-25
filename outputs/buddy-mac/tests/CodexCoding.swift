@@ -84,6 +84,7 @@ import AppKit
             try require(thread["sandbox"] as? String == "workspace-write" && thread["approvalPolicy"] as? String == "on-request" && thread["approvalsReviewer"] as? String == "user", "workspace-write, approvals asked of Buddy: \(thread["sandbox"] ?? "-") \(thread["approvalPolicy"] ?? "-")")
             try require(config["sandbox_workspace_write.network_access"] as? Bool == false && config["sandbox_workspace_write.exclude_slash_tmp"] as? Bool == true && config["sandbox_workspace_write.exclude_tmpdir_env_var"] as? Bool == true, "network off and writes only in the project: \(config)")
             try require(config["features.apps"] as? Bool == false && thread["model"] as? String == "gpt-fixture-coder", "no connectors, the agent's model: \(config["features.apps"] ?? "-") \(thread["model"] ?? "-")")
+            try require(thread["threadSource"] as? String == "chatgpt_hidden", "labelled so the ChatGPT app keeps it off its sidebar while it works: \(thread["threadSource"] ?? "-")")
             let tools = Set((thread["dynamicTools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
             let claudeCoding = Set(BuddyProjectFiles.tools.compactMap { $0["name"] as? String }).union(["buddy_copy_into_project", "buddy_copy_out_of_project", "buddy_checkpoint", "buddy_request_decision", "buddy_request_signin", "buddy_coding_command", "buddy_browser_fetch", "buddy_service_api", "buddy_remote_machine"])
             // Buddy's command tool is there only for a command that signs in (credential is required); Codex runs every other command in its own shell.
@@ -141,6 +142,7 @@ import AppKit
             let methods = order(buildID), resumed = methods.lastIndex(of: "thread/resume") ?? 0
             try require(methods[..<resumed].last { $0.hasPrefix("thread/") } == "thread/unarchive" && requests(buildID, "thread/unarchive").last?["threadId"] as? String == text(before["codingSessionID"]), "it unarchived the thread first, since Codex resumes only an unarchived thread: \(methods)")
             try require(await archived(buildID, text(before["codingSessionID"])), "and archived it again once this attempt ended")
+            try require(requests(buildID, "thread/resume").allSatisfy { $0["threadSource"] == nil }, "thread/resume is sent no label: the thread keeps the one it was started with")
             try require((again["commands"] as? [[String: Any]])?.count == 3, "the earlier receipts stay and the new one is added")
         }
 

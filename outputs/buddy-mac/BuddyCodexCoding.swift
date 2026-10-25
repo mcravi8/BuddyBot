@@ -89,7 +89,8 @@ import Foundation
         return config
     }
     static func threadParams(cwd: String, model: String, instructions: String, config: [String: Any]) -> [String: Any] {
-        ["cwd": cwd, "modelProvider": "openai", "model": model, "approvalPolicy": "on-request", "approvalsReviewer": "user", "sandbox": "workspace-write", "config": config, "developerInstructions": instructions, "dynamicTools": tools]
+        ["cwd": cwd, "modelProvider": "openai", "model": model, "approvalPolicy": "on-request", "approvalsReviewer": "user", "sandbox": "workspace-write", "config": config, "developerInstructions": instructions, "dynamicTools": tools,
+         "threadSource": ConversationService.hiddenThreadSource]
     }
     static func turnParams(thread: String, prompt: String, cwd: String, model: String, run: String) -> [String: Any] {
         ["threadId": thread, "input": [["type": "text", "text": prompt]], "clientUserMessageId": run, "cwd": cwd, "model": model, "approvalPolicy": "on-request",
@@ -206,7 +207,7 @@ import Foundation
             let params = BuddyCodexCoding.threadParams(cwd: cwd, model: model, instructions: instructions, config: BuddyCodexCoding.threadConfig(service.codingRestrictions))
             var id: String?
             if let resume, !resume.isEmpty {
-                var again = params; again.removeValue(forKey: "dynamicTools"); again["threadId"] = resume
+                var again = params; again.removeValue(forKey: "dynamicTools"); again.removeValue(forKey: "threadSource"); again["threadId"] = resume
                 // The last attempt archived it when its connection closed (ConversationService.close), and Codex resumes only an unarchived thread.
                 await service.reopen(resume)
                 id = ((try? await service.codingRequest("thread/resume", again))?["thread"] as? [String: Any])?["id"] as? String

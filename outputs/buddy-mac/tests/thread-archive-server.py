@@ -3,7 +3,7 @@
 a saved thread is listed in the person's ChatGPT/Codex apps until it is archived; archiving unloads it; an archived thread can't be resumed or
 forked until it is unarchived; archiving one that is already archived, or ephemeral, finds no rollout; unarchiving one that isn't archived is
 refused. What it holds is kept in codex-home.json beside its working folder, as Codex keeps its rollouts on disk, so it outlives a restart.
-Every request is appended to codex-requests.jsonl there. A turn whose text says HOLD never finishes. No network and no model."""
+Every request is appended to codex-requests.jsonl there; a thread keeps the threadSource it was started or forked with, as Codex does. A turn whose text says HOLD never finishes. No network and no model."""
 import json, os, sys, uuid
 
 HOME = os.path.join(os.path.dirname(os.getcwd()), 'codex-home.json')
@@ -34,7 +34,7 @@ for line in sys.stdin:
             if home.get(tid, {}).get('archived'): fail(m, 'session %s is archived. Run `codex unarchive %s` to unarchive it first.' % (tid, tid)); continue
             if tid not in home: fail(m, 'no rollout found for thread id %s' % tid); continue
         new = str(uuid.uuid4()); loaded.add(new)
-        if not p.get('ephemeral'): home[new] = {'archived': False, 'opened': method.split('/')[1], 'from': tid, 'turns': 0}; save(home)
+        if not p.get('ephemeral'): home[new] = {'archived': False, 'opened': method.split('/')[1], 'from': tid, 'turns': 0, 'threadSource': p.get('threadSource')}; save(home)
         result = {'thread': {'id': new, 'ephemeral': bool(p.get('ephemeral'))}}
     elif method == 'thread/resume':
         if home.get(tid, {}).get('archived'): fail(m, 'session %s is archived. Run `codex unarchive %s` to unarchive it first.' % (tid, tid)); continue
