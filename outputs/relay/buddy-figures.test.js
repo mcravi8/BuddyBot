@@ -116,3 +116,29 @@ test('the working light is brightest where it is, fades behind it, and the track
   assert.ok(pos.every(p=>p>=0&&p<1));
   assert.ok(pos.slice(1).every((p,i)=>((p-pos[i])%1+1)%1<.03),'one pace, all the way round');
 });
+test('an agent figure is crisp: every cell is the head or empty, eyes stay open, a blink still closes them, and the logo keeps its soft look',()=>{
+  const crisp=(shape,tweak=()=>{},X={order:[0],rings:true,group:0,crisp:true})=>{
+    const M=E.mkSim(),r=E.mkR(M,shape,'lilac',{x:0,y:0,s:1.12},1);tweak(r);
+    const P=2.6,half=25,N=Math.ceil(2*half/P)+2,grid=Array.from({length:N},()=>Array(N).fill(0));
+    E.headCells((i,j,v)=>{if(i>=0&&j>=0&&i<N&&j<N)grid[j][i]=Math.max(grid[j][i],v);},N*P/2,N*P/2,half,[r],X,P,N,N);
+    return {values:grid.flat(),at:(x,y)=>grid[Math.round(N/2+y*half/P-.5)][Math.round(N/2+x*half/P-.5)]};
+  };
+  for(const shape of F.SHAPES){
+    const {values,at}=crisp(shape);
+    assert.ok(values.every(v=>v===0||v===1),`${shape}: no half-lit cells at the edge`);
+    assert.equal(at(0,.35),1,`${shape}: body is full ink`);assert.equal(at(E.EYEDX[shape],-.03),0,`${shape}: eye is empty`);
+  }
+  assert.ok(!crisp('sphere').values.some(v=>v>0&&v<1),'the sphere is not shaded');
+  assert.equal(crisp('pill',r=>{r.open=.05;}).at(.2,-.03),1,'a closed eye fills in');
+  assert.ok(crisp('pill',()=>{},{order:[0],rings:true,group:0}).values.some(v=>v>0&&v<1),'without crisp (the logo) the edge stays soft');
+});
+test('a crisp avatar draws its head as one size of full-ink dot, with faint field dots around it',()=>{
+  const arcs=[];let style='';
+  const c={beginPath(){},arc(x,y,r){arcs.push({r,style:null});},set fillStyle(v){style=v;},get fillStyle(){return style;},fill(){arcs[arcs.length-1].style=style;}};
+  const M=E.mkSim(),r=E.mkR(M,'hex','cobalt',{x:0,y:0,s:1.12},1),[n,es]=E.gridFor(44,false),sp=300/(n-1);
+  E.drawAv(c,n,es,[r],{order:[0],rings:true,group:0,amb:0,clean:true,crisp:true},1);
+  const head=arcs.filter(a=>a.style.startsWith('rgb(')),field=arcs.filter(a=>a.style.endsWith(',.14)'));
+  assert.ok(head.length>100&&field.length>50,`${head.length} head dots, ${field.length} field dots`);
+  assert.ok(head.every(a=>Math.abs(a.r-.47*sp)<1e-9&&a.style===head[0].style),'every head dot is the same size and the same ink');
+  assert.ok(field.every(a=>Math.abs(a.r-.17*sp)<1e-9),'field dots are small and faint');
+});

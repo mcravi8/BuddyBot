@@ -7,6 +7,10 @@
   const rgb=h=>{const n=parseInt(h.slice(1),16);return [n>>16,(n>>8)&255,n&255];};
   const hash=(a,b)=>{const s=Math.sin(a*127.1+b*311.7)*43758.5453;return s-Math.floor(s);};
   const sst=(e0,e1,x)=>{const k=Math.max(0,Math.min(1,(x-e0)/(e1-e0)));return k*k*(3-2*k);};
+  // An agent's figure is crisp (X.crisp): a cell is the head or it is not, the head's dots are full ink and one size, and the sphere is not
+  // shaded. Its edges used to fade over a cell or so, which read blurred, and at 28 px the eyes all but disappeared (the person chose "Crisp
+  // halftone" on 26 Oct). The Buddy logo keeps its soft look.
+  const inside=d=>d<0?1:0;
   const rnd=(a,b)=>a+Math.random()*(b-a);
   const easeIO=k=>k<.5?4*k*k*k:1-Math.pow(-2*k+2,3)/2;
   const sdBox=(px,py,bx,by,r)=>{const qx=Math.abs(px)-bx+r,qy=Math.abs(py)-by+r;return Math.hypot(Math.max(qx,0),Math.max(qy,0))+Math.min(Math.max(qx,qy),0)-r;};
@@ -116,10 +120,11 @@
       const m=M[k],r=m.r;
       if(Math.abs(u0-r.x)>m.reach||Math.abs(v0-r.y)>m.reach)continue;
       evalM(m,u0,v0);
-      const bc=sst(edge,-edge,EV.dB);
+      const bc=X.crisp?inside(EV.dB):sst(edge,-edge,EV.dB);
       if(bc>maxB)maxB=bc;
-      if(bc>.001&&block<.999){let ff=bc*(1-sst(edge,-edge,EV.dE))*(1-block);if(m.sph)ff*=shade(EV.qx,EV.qy);if(ff>f){f=ff;H=r.ink;}}
-      block=Math.max(block,gap?sst(edge,-edge,EV.dB-gap):bc);
+      if(X.crisp){if(bc&&!block&&EV.dE>=0){f=1;H=r.ink;}}
+      else if(bc>.001&&block<.999){let ff=bc*(1-sst(edge,-edge,EV.dE))*(1-block);if(m.sph)ff*=shade(EV.qx,EV.qy);if(ff>f){f=ff;H=r.ink;}}
+      block=Math.max(block,gap?(X.crisp?inside(EV.dB-gap):sst(edge,-edge,EV.dB-gap)):bc);
       accumFx(m,u0,v0,X);
     }
     CELL.f=f;CELL.H=H;CELL.maxB=maxB;
@@ -152,7 +157,10 @@
         const {f,H,maxB}=cellAt(M,ord,edge,gap,X,u0,v0);
         groupRing(X,u0,v0,.9);
         const A=ACC.col,out=1-maxB,aP=Math.min(1,a)*out,rP=Math.min(1,ACC.v)*out;
+        // A crisp head's dot is full ink and one size, nearly touching its neighbours; around it, faint dots of the field fill the circle.
+        if(X.crisp&&f){c.beginPath();c.arc(10+i*sp,10+j*sp,.47*sp,0,TAU);c.fillStyle=`rgb(${H[0]},${H[1]},${H[2]})`;c.fill();continue;}
         const val=Math.min(1,f+aP+rP);
+        if(X.crisp&&X.clean&&val<.02){if(d<=.98){c.beginPath();c.arc(10+i*sp,10+j*sp,.17*sp,0,TAU);c.fillStyle=`rgba(${NEU[0]},${NEU[1]},${NEU[2]},.14)`;c.fill();}continue;}
         if(X.clean&&val<.02)continue;
         const rad=.35+val*(rMax-.35);
         const tot=f+aP+rP+.02,wh=f/tot,wr=rP/tot,wa=1-wh-wr;
@@ -252,7 +260,7 @@
     if(kind==='group'){
       const mem=membersOf(el.dataset.figId);if(!mem.length)return;
       R=mem.map((a,k)=>mkR(still?rest():sim(a.id),normShape(a.avatarShape),normColor(a.avatarColor),HUD[k],t));
-      X={order:HUD_ORDER.filter(k=>k<R.length),rings:false,...groupSweep(R,t),amb:size>100?.28:0,clean:size<=100};
+      X={order:HUD_ORDER.filter(k=>k<R.length),rings:false,...groupSweep(R,t),amb:size>100?.28:0,clean:size<=100,crisp:true};
     }else{
       let shape,color,M,pos={x:0,y:0,s:1.12};
       if(kind==='agent'){
@@ -261,7 +269,7 @@
         shape=normShape(a?a.avatarShape:el.dataset.shape);color=normColor(a?a.avatarColor:el.dataset.color);M=still?rest():sim(a?a.id:'anon');
       }else{shape='pill';color='graphite';M=sim('logo');pos={x:0,y:.02,s:1.32};}
       R=[mkR(M,shape,color,pos,t)];
-      X={order:[0],rings:true,group:0,amb:size>100?.25:0,clean:size<=100};
+      X={order:[0],rings:true,group:0,amb:size>100?.25:0,clean:size<=100,crisp:kind!=='logo'};
     }
     const px=Math.round(size*dpr);
     if(el.width!==px){el.width=px;el.height=px;}
@@ -353,12 +361,12 @@
       if(spec.kind==='group'){
         const mem=membersOf(spec.id);if(!mem.length)continue;
         R=mem.map((a,k)=>Object.assign(mkR(sim(a.id),normShape(a.avatarShape),normColor(a.avatarColor),HUD[k],t),{pulse:1}));
-        X={order:HUD_ORDER.filter(k=>k<R.length),rings:false,...groupSweep(R,t)};
+        X={order:HUD_ORDER.filter(k=>k<R.length),rings:false,...groupSweep(R,t),crisp:true};
       }else{
         const a=spec.kind==='agent'?cfg.agent(spec.id):null;if(spec.kind==='agent'&&!a)continue;
         const M=a?sims[a.id]:sims.logo;if(!M)continue;
         R=[Object.assign(mkR(M,a?normShape(a.avatarShape):'pill',a?normColor(a.avatarColor):'graphite',a?{x:0,y:0,s:1.05}:{x:0,y:.02,s:1.25},t),{pulse:1})];
-        X={order:[0],rings:true,group:0};
+        X={order:[0],rings:true,group:0,crisp:!!a};
         if(a){
           const col=INKRGB[normColor(a.avatarColor)][DARK?1:0],pt=t-M.pulseT;
           if(pt>=0&&pt<1.8){
