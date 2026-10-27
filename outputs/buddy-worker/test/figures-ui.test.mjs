@@ -15,18 +15,22 @@ test('figures are painted in rows, messages, previews and inline names; search, 
    window.appearance=[];BuddyDesktop={saveState:async()=>({saved:true}),setAppearance:c=>{appearance.push(c);}};ui.view={kind:'chat',target:'chief'};render();
   });
   await page.waitForTimeout(600);
-  // Rows hold slots, not canvases; the one dot field behind them is painted.
+  // Rows hold slots, each with its agent's fold figure (buddy-fold-agents.js); the one dot field behind them is painted.
   assert.equal(await page.locator('.sidebar canvas.sidebar-field').count(),1);
   assert.equal(await page.locator('.chat-row .fig-slot').count(),3);
-  assert.equal(await page.locator('.chat-row canvas').count(),0);
+  assert.equal(await page.locator('.chat-row .fig-slot canvas.fold-fig').count(),3);
   assert.equal(await page.locator('img.avatar,.avatar img').count(),0,'no image avatars remain');
   const litPixels=sel=>page.evaluate(selector=>{const c=document.querySelector(selector);if(!c)return -1;const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>140)n++;return n;},sel);
-  // Pixel check on the field: a head is drawn at each row's slot, and the control spot (empty space) is not.
+  // Pixel check: each row's figure is painted, and the dot field draws no old head behind it (the control spot is empty space).
   const field=await page.evaluate(()=>{const f=document.querySelector('canvas.sidebar-field'),fr=f.getBoundingClientRect(),dpr=f.width/fr.width,ctx=f.getContext('2d');
-   const heavy=(cx,cy,r)=>{const d=ctx.getImageData(Math.max(0,(cx-r)*dpr),Math.max(0,(cy-r)*dpr),2*r*dpr,2*r*dpr).data;let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>140)n++;return n;};
-   const slots=[...document.querySelectorAll('.chat-row .fig-slot')].map(s=>{const r=s.getBoundingClientRect();return heavy(r.left-fr.left+r.width/2,r.top-fr.top+r.height/2,22);});
-   return {slots,empty:heavy(fr.width-30,fr.height-200,22)};});
+   const count=d=>{let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>140)n++;return n;};
+   const heavy=(cx,cy,r)=>count(ctx.getImageData(Math.max(0,(cx-r)*dpr),Math.max(0,(cy-r)*dpr),2*r*dpr,2*r*dpr).data);
+   const rows=[...document.querySelectorAll('.chat-row .fig-slot')];
+   const slots=rows.map(s=>{const c=s.querySelector('canvas.fold-fig');return c?count(c.getContext('2d').getImageData(0,0,c.width,c.height).data):-1;});
+   const behind=rows.map(s=>{const r=s.getBoundingClientRect();return heavy(r.left-fr.left+r.width/2,r.top-fr.top+r.height/2,22);});
+   return {slots,behind,empty:heavy(fr.width-30,fr.height-200,22)};});
   for(const n of field.slots)assert.ok(n>60,`a figure is painted at each row (${field.slots})`);
+  for(const n of field.behind)assert.ok(n<5,`the dot field draws no old head behind a row's figure (${field.behind})`);
   assert.ok(field.empty<5,'empty sidebar space carries no figure (control)');
   assert.ok(await litPixels('.conversation-title canvas.fig')>60,'the header figure is painted');
   // The old names draw as the new figures before any migration runs, and loading a saved workspace rewrites them.

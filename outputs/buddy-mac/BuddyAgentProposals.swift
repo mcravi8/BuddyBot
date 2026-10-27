@@ -1,9 +1,9 @@
 import Foundation
 
-/// Agents are drawn as halftone figures: four shapes in seven inks. Saved workspaces and models that still use the
+/// Agents are drawn as fold figures: six shapes in seven inks ("sphere" is the circle). Saved workspaces and models that still use the
 /// original 3D shape names are accepted and become the figure that replaced them.
 enum BuddyAvatar {
-    static let shapes = ["diamond", "sphere", "hex", "pill"]
+    static let shapes = ["square", "sphere", "hex", "pill", "arch", "diamond"]
     static let colors = ["lilac", "blue", "peach", "mint", "red", "gold", "cobalt"]
     static let legacyShapes = ["star": "diamond", "pebble": "sphere", "cube": "hex", "clover": "pill"]
     static func shape(_ value: String) -> String? { let id = legacyShapes[value] ?? value; return shapes.contains(id) ? id : nil }

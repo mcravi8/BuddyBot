@@ -13,7 +13,7 @@ enum BuddyDrop {
     /// Room for four holders 92pt apart from y 76, their pulse rings and shadows, and a label beside each.
     static let panelSize = NSSize(width: 400, height: 440)
     static let kinds: Set<String> = ["done", "needs"]
-    static let shapes: Set<String> = ["diamond", "sphere", "hex", "pill"]
+    static let shapes: Set<String> = ["square", "sphere", "hex", "pill", "arch", "diamond"]
     static let colors: Set<String> = ["lilac", "blue", "peach", "mint", "red", "gold", "cobalt"]
 
     /// One drop as the page asked for it, checked: an agent of this workspace, a chat of this workspace, and plain short text.
