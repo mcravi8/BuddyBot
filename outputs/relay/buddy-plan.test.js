@@ -203,7 +203,7 @@ test('the plan strip names every teammate working at once, and each of their tas
  assert.equal(P.banner(p,pulse({lyra:{state:'working',taskId:'w1'}}),names,NOW),'Working on Stage 1 of 3 — 0 of 3 tasks done — Lyra is working on “Task t1” (30 min), plus 2 more');
 });
 
-test('plan notices read as cards: a stage report with its criteria, rows and what comes next; a decision with its recommendation; an authorization as one line',()=>{
+test('plan notices read as short chat messages: a stage report in a line with the rest under Details, a decision with its suggestion, a stuck notice and an authorization as one line',()=>{
  const report='Acceptance: S01 PASS, independently signed off by Vera.\nOutputs: stages/S01_protocol/ contains spec_v1.sha256 and acceptance.md.\nDecision: Preserve frozen protocols because the rendering input is unchanged.\nIssues: No remaining S01 blockers.';
  const holding=plan('holding',{state:'stage_done'},{scope:{...scope,status:'achieved'},stages:[stage(1,'done',[task('t1','done')]),stage(2,'proposed'),stage(3,'proposed')],
   notices:[{id:'r1',kind:'stage_report',text:report+'\n\nNext is Stage 2 — Build: Goal of stage 2. Say “get stage 2 done”, or tell me what to change.',chat:true,status:'open',refs:{stageId:'s1'}},
@@ -214,27 +214,27 @@ test('plan notices read as cards: a stage report with its criteria, rows and wha
  assert.equal(P.splitReport('Stage 1 — Research is done.').prose,'Stage 1 — Research is done.','a report in prose stays prose');
  const card=P.noticeCard(holding,msg(holding.notices[0]));
  assert.equal(card.label,'Stage report');
- assert.match(card.html,/<h3>Stage 1 · Research<\/h3><span class="plan-chip done">Done<\/span>/);
- assert.match(card.html,/<dt>Issues<\/dt><dd>No remaining S01 blockers.<\/dd>/);
- assert.match(card.html,/<dl class="plan-card-rows"><dt>Acceptance<\/dt><dd>[^<]*<\/dd><dt>Issues<\/dt>/,'what the stage achieved and what is open stay in view');
- assert.match(card.html,/<details class="plan-card-more"><summary>Details<\/summary><dl class="plan-card-rows"><dt>Outputs<\/dt><dd>[^<]*<\/dd><dt>Decision<\/dt>/,'where the files went and what Chief decided fold under Details');
- assert.match(card.html,/class="met"><svg[^>]*>.*?<\/svg><span>Criterion 1a<\/span>/,'its stage’s criteria, met');
+ assert.match(card.html,/<p class="plan-card-line"><strong>Stage 1 is done<\/strong> · S01 PASS, independently signed off by Vera\.<\/p>/,'one line: which stage, and the point');
+ const [line1,folded]=card.html.split('<details class="plan-card-more">');
+ assert.doesNotMatch(line1,/Done when|<dt>|Criterion 1a/,'nothing else is in view');
+ assert.match(folded,/^<summary>Details<\/summary>/);assert.match(folded,/<dt>Issues<\/dt><dd>No remaining S01 blockers.<\/dd>/);assert.match(folded,/<dt>Outputs<\/dt>/);
+ assert.match(folded,/Done when[\s\S]*class="met"><svg[^>]*>.*?<\/svg><span>Criterion 1a<\/span>/,'its stage’s criteria, met, are a click away');
  assert.match(card.html,/data-plan-authorize="2"[^>]*>Get stage 2 done</,'the next stage is the person’s choice, on the card');
  assert.doesNotMatch(card.html,/Next is Stage 2/,'the plan’s sentence about what comes next is the footer, not part of the report');
  const started={...holding,status:'active',scope:{...scope,through:2},stages:[stage(1,'done'),stage(2,'working'),stage(3,'proposed')]};
  assert.match(P.noticeCard(started,msg(holding.notices[0])).html,/Stage 2 started/,'once chosen, the card says so instead of asking again');
  assert.doesNotMatch(P.noticeCard(started,msg(holding.notices[0])).html,/data-plan-authorize/);
  const decision=P.noticeCard(holding,msg(holding.notices[1]));
- assert.match(decision.html,/Needs your decision · a change to the plan/);
- assert.match(decision.html,/<h3>Approve the recommended suspension\?<\/h3>/);
- assert.match(decision.html,/Chief recommends<\/span><p>Suspend S02a recovery until runtime access is back<\/p>/);
+ assert.match(decision.html,/<p class="plan-card-line"><span class="plan-card-badge">Needs you · a change to the plan<\/span> <strong>Approve the recommended suspension\?<\/strong><\/p>/);
+ assert.match(decision.html,/<p class="plan-card-suggest">Chief suggests: Suspend S02a recovery until runtime access is back<\/p>/);
  assert.match(decision.html,/data-plan-answer="approve" data-notice="e1"/);
  assert.doesNotMatch(decision.html,/plan-card-context/,'a question alone has nothing under it');
  // A question that opened with the state of the work: the question is the heading, what led to it reads under it, folded once it is long.
  const ask='Stage 5 remains PARTIAL. Vera verified all five numerical tables without displayed-value mismatches, but that is not full report acceptance. The original S04a draft was assembled before its required freeze; the later repair freeze cannot establish original compliance. May we accept this historical timing exception, explicitly documented, while retaining every other outstanding requirement? This does not authorize S05 or submission.';
  assert.deepEqual(P.askParts(ask),{ask:'May we accept this historical timing exception, explicitly documented, while retaining every other outstanding requirement?',context:'Stage 5 remains PARTIAL. Vera verified all five numerical tables without displayed-value mismatches, but that is not full report acceptance. The original S04a draft was assembled before its required freeze; the later repair freeze cannot establish original compliance. This does not authorize S05 or submission.'});
  const long=P.noticeCard({...holding,notices:[{id:'e2',kind:'escalation',text:ask,chat:true,status:'open',refs:{question:ask,recommendation:'Approve the exception',category:'objective'}}]},{id:'plan-notice-e2',planNotice:true,planId:'p1',noticeKind:'escalation',body:ask,whoName:'Chief'});
- assert.match(long.html,/<h3>May we accept this historical timing exception, explicitly documented, while retaining every other outstanding requirement\?<\/h3><details class="plan-card-more"><summary>Details<\/summary><p class="plan-card-context">Stage 5 remains PARTIAL\./);
+ assert.match(long.html,/<strong>May we accept this historical timing exception, explicitly documented, while retaining every other outstanding requirement\?<\/strong><\/p>/);
+ assert.match(long.html,/<details class="plan-card-more"><summary>Details<\/summary><p class="plan-card-context">Stage 5 remains PARTIAL\./,'what led to it is a click away');
  const asked=P.askParts('Please provide the student ID to use on the report cover. The revised draft is saved.');
  assert.deepEqual(asked,{ask:'Please provide the student ID to use on the report cover.',context:'The revised draft is saved.'},'with no question mark, the first sentence is what is asked');
  assert.deepEqual(P.askParts('The maximum spread is 0.019246, not 0.01. Approve?'),{ask:'Approve?',context:'The maximum spread is 0.019246, not 0.01.'},'a number is not the end of a sentence');
@@ -243,6 +243,13 @@ test('plan notices read as cards: a stage report with its criteria, rows and wha
  assert.match(P.noticeCard(holding,msg(holding.notices[1]),{reply:{open:true,draft:'Wait until Monday'}}).html,/<textarea[^>]*>Wait until Monday<\/textarea>/,'a reply being written is kept');
  const line=P.noticeCard(holding,msg(holding.notices[2]));
  assert.equal(line.line,true);assert.equal(line.html,'<strong>Stage 2 authorized</strong><span> · working on Stage 2 — Build</span>');
+ // Stuck is one plain line too: the reason without the stage's long title, cut to its first sentence (the whole reason on hover), and a way
+ // to tell Chief.
+ const stuckText='The team is stuck on Stage 5 — S04a then separately triggered S04b: Word draft and user review: Chief tried to add tasks, but Buddy refused: At most 12 tasks can be added to one stage; stage 5 has 12. Tell me how to proceed.';
+ const stuckPlan={...holding,stages:[...holding.stages,{...stage(3,'working'),id:'s5',n:5,title:'S04a then separately triggered S04b: Word draft and user review'}]};
+ const stuck=P.noticeCard(stuckPlan,{id:'plan-notice-s1',planNotice:true,planId:'p1',noticeKind:'stuck',body:stuckText,whoName:'Chief'});
+ assert.equal(stuck.line,true);assert.match(stuck.html,/^<strong class="plan-stuck-mark">Stuck<\/strong><span> · Chief tried to add tasks, but Buddy refused: At most 12 tasks can be added to one stage; stage 5 has 12\.<\/span> <button type="button" class="small-link" data-plan-answer="chat">Tell Chief<\/button>$/);
+ assert.doesNotMatch(stuck.html,/S04a|Tell me how to proceed/);
  assert.equal(P.noticeCard(null,msg(holding.notices[0])),null,'a notice whose plan is not known stays a plain message');
  assert.equal(P.noticeCard(holding,{...msg(holding.notices[0]),noticeKind:'proposal'}),null);
 });
@@ -256,4 +263,9 @@ test('a question waiting for the person is answered from the plan view in one st
  // Waiting for the person without a question card (a task held for them) still lists what needs them.
  const held=active([task('t1','blocked',{blockedOn:'user'}),task('t2','pending'),task('t3','pending')],{state:'needs_you',needsYou:1});
  assert.match(P.stripHTML(held,pulse({}),names,{open:true,now:NOW}),/data-activity-open>See what needs you/);
+});
+test('a long reason or report opens with its first sentence, as plain text, never cut inside a word',()=>{
+ assert.deepEqual(P.firstLine('Stage 3 is **done**. The [report](<file:///x/r.md>) is saved.'),{first:'Stage 3 is done.',more:true});
+ assert.deepEqual(P.firstLine('Short.'),{first:'Short.',more:false});
+ const cut=P.firstLine('word '.repeat(80),60);assert.ok(cut.first.endsWith('…')&&!/wor…$/.test(cut.first)&&cut.first.length<=60&&cut.more);
 });

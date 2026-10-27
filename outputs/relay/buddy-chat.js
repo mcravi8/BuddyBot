@@ -58,11 +58,11 @@
     }
     const run=state.runs?.[message.runId];let body=String(message.body||''),rest='';
     if(!body||message.setup||run&&/\b(?:explain|details|detail|why|breakdown|report|full|thorough)\b/i.test(run.text||''))return {body};
-    // A task's message shows whole when it is a message (two short paragraphs at most), with the team's details folded; a long one is cut
-    // to its opening below, like any other, with everything folded.
+    // A task's message shows whole when it is a short message (one paragraph), with the team's details folded; a longer one opens with its
+    // point in a sentence or two, like any other, with everything folded. The person asked for details at request, not by default.
     const parts=message.workerTaskID?resultParts(body,(state.agents||[]).map(a=>a.name)):null;
     if(parts?.lead)({lead:body,rest}=parts);
-    if(rest&&body.length<=600&&body.split(/\n\s*\n/).length<=2)return {body,details:rest};
+    if(rest&&body.length<=360&&body.split(/\n\s*\n/).length<=1)return {body,details:rest};
     const operational=message.teamPlanIds?.length||message.proposalIds?.length||message.routines?.length||message.tasks?.length||message.workerTaskID;
     if(!operational||body.length<=360)return rest?{body,details:rest}:{body};
     if(rest)body+='\n\n---\n\n'+rest;
@@ -71,7 +71,7 @@
     const links=[],paragraph=body.trim().split(/\n\s*\n/)[0].replace(/\[[^\]\n]*\]\((?:<[^>\n]*>|[^)\s]*)\)/g,m=>`\u0000${links.push(m)-1}\u0000`);
     const restore=t=>t.replace(/\u0000(\d+)\u0000/g,(_,i)=>links[i]),label=t=>t.replace(/\u0000(\d+)\u0000/g,(_,i)=>links[i].slice(1,links[i].indexOf('](')));
     let short='',remaining=paragraph;
-    for(let i=0;i<2&&remaining;i++){const end=remaining.search(/[.!?](?=\s|$)/),sentence=end<0?remaining:remaining.slice(0,end+1);if(label((short+' '+sentence).trim()).length>360)break;short=(short+' '+sentence).trim();remaining=end<0?'':remaining.slice(end+1).trimStart();}
+    for(let i=0;i<2&&remaining;i++){const end=remaining.search(/[.!?](?=\s|$)/),sentence=end<0?remaining:remaining.slice(0,end+1);if(label((short+' '+sentence).trim()).length>280)break;short=(short+' '+sentence).trim();remaining=end<0?'':remaining.slice(end+1).trimStart();}
     short=short.trim()?restore(short.trim()):label(paragraph).slice(0,320).replace(/\s+\S*$/,'')+'…';
     return {body:short,details:body};
   }

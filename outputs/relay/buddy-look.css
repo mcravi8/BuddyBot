@@ -47,3 +47,12 @@ time,.date-divider,.chat-row-top time,.reply-status{font-variant-numeric:tabular
 
 /* "3 messages with Chief" between bubbles is a quiet chip. */
 .agent-messages-link{background:var(--soft);border-radius:999px}
+
+/* Agents talking to each other in a group chat read like any agent's message: a grey bubble, the "@name" line, the rest a click away. */
+.team-chat-agent-message .bot-bubble{background:var(--bubble);border-color:transparent}
+.team-chat-agent-message.is-sent-back .bot-bubble{box-shadow:inset 0 0 0 1px var(--warn-line)}
+.team-chat-line p{margin:0}
+.team-chat-agent-message .team-chat-more>summary{display:inline-flex;align-items:center;min-height:28px;margin-top:6px;padding:3px 11px;border:1px solid var(--line-strong);border-radius:999px;color:var(--text1);font-size:12px;list-style:none;cursor:pointer}
+.team-chat-agent-message .team-chat-more>summary::-webkit-details-marker{display:none}
+.team-chat-agent-message .team-chat-more[open]>.reply-markdown{margin-top:8px}
+.team-chat-tag{margin-left:8px;font-size:11.5px;font-weight:500;color:var(--ok)}.team-chat-tag.is-back{color:var(--warn)}

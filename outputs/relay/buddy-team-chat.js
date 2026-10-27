@@ -22,7 +22,20 @@
     }
     return out.filter(i=>Number.isFinite(Date.parse(i.createdAt))).sort((a,b)=>Date.parse(a.createdAt)-Date.parse(b.createdAt)||a.id.localeCompare(b.id));
   }
-  const api={items};root.BuddyTeamChat=api;if(typeof module!=='undefined')module.exports=api;if(typeof document==='undefined')return;
+  const VERBS=new Set(['add','analyse','analyze','apply','assemble','audit','build','calibrate','check','clean','collect','compare','compile','compute','confirm','convert','create','draft','edit','estimate','execute','export','extract','fetch','finalise','finalize','find','finish','fit','fix','format','gather','generate','implement','list','load','make','map','merge','move','package','plot','prepare','produce','proofread','reconcile','record','redo','render','repair','replace','reproduce','rerun','research','review','revise','rewrite','run','save','scan','search','send','set','simulate','sketch','split','summarise','summarize','test','tidy','trace','update','validate','verify','write']);
+  function askLine(name,title){
+    const t=String(title||'').trim().replace(/[.?!:;]+$/,''),word=t.split(/\s+/)[0]||'',lower=word.toLowerCase();
+    if(!t)return `**@${name}** there's a new task for you.`;
+    return VERBS.has(lower)?`**@${name}** can you ${lower}${t.slice(word.length)}?`:`**@${name}** ${t}`;
+  }
+  // A short message whole; a longer one's first sentence (or its first 220 characters), and whether anything is left after it.
+  function opening(text){
+    const all=String(text||'').trim(),para=all.split(/\n\s*\n/)[0].replace(/\s+/g,' '),end=para.search(/[.!?](?=\s|$)/);
+    if(para===all.replace(/\s+/g,' ')&&para.length<=200)return {first:para,more:false};
+    let first=end>=0&&end<220?para.slice(0,end+1):para.length<=220?para:para.slice(0,200).replace(/\s+\S*$/,'')+'…';
+    return {first,more:all.replace(/\s+/g,' ').length>first.length+1};
+  }
+  const api={items,askLine,opening};root.BuddyTeamChat=api;if(typeof module!=='undefined')module.exports=api;if(typeof document==='undefined')return;
   const chats=id=>root.BuddyAgentMessages?.groupMessages?.(id)||[];
   api.hasTimeline=id=>{const g=findGroup(id);return !!g&&items(state,g,chats(id)).length>0;};
   api.timeline=(id,messages)=>{
@@ -41,16 +54,22 @@
     const note=error?'Couldn’t finish':m.recipients.length?`For ${m.recipients.map(id=>esc(agentName(id))).join(', ')}`:'';
     return `<div class="message bot-message team-chat-contribution ${error?'is-error':''}">${avatar(m.agentId,true)}<div class="bot-bubble"><div class="team-chat-author">${author}${note?`<span>${note}</span>`:''}</div><div class="reply-markdown">${BuddyMarkdown.render(m.body)}</div><time title="${m.approximate?'Recorded with the saved team reply':esc(new Date(m.createdAt).toLocaleString())}">${esc(time)}</time></div></div>`;
   };
-  // One agent's message to another, as in a team's own chat: “Chief → Forge”, what it is (a new task, a question, work handed in, an answer, a
-  // verdict), and the words. A long brief shows its start, with the rest a click away.
-  const what={handoff:'New task',question:'Question',result:'Handed in',checkin:'Check-in'};
+  // One agent's message to another, as in a Slack channel: who wrote it, then "@Lyra" and the point in one line, the rest a click away. A task
+  // handed out reads "@Lyra can you draft the new caption wording?" with its brief folded; it used to show "Chief → Lyra · New task" and the whole
+  // brief. A question, work handed in or an answer shows its first sentence; the person asked for details at request, not by default.
   function agentMessage(m,time){
     const agent=findAgent(m.agentId),to=agentName(m.toAgentId);
     const author=agent&&typeof authorColor==='function'?`<button type="button" class="message-author" style="${authorColor(agent)}" data-action="agent-info" data-id="${esc(agent.id)}">${esc(agent.name)}</button>`:`<strong>${esc(agentName(m.agentId))}</strong>`;
-    const label=m.reply?(m.verdict==='accepted'?'Accepted':m.verdict==='sent back'?'Sent back':m.messageKind==='question'?'Answer':'Reply'):(what[m.messageKind]||'Message');
-    const about=m.title&&['handoff','result'].includes(m.messageKind)?` · ${esc(m.title)}`:'';
-    const body=m.body.length>700?`<div class="reply-markdown">${BuddyMarkdown.render(m.body.slice(0,400).replace(/\s+\S*$/,'')+'…')}</div><details class="team-chat-more"><summary>Show all</summary><div class="reply-markdown">${BuddyMarkdown.render(m.body)}</div></details>`:`<div class="reply-markdown">${BuddyMarkdown.render(m.body)}</div>`;
-    return `<div class="message bot-message team-chat-contribution team-chat-agent-message ${m.verdict==='sent back'?'is-sent-back':''}">${avatar(m.agentId,true)}<div class="bot-bubble"><div class="team-chat-author">${author}<span>→ ${esc(to)} · ${label}${about}</span></div>${body}<time title="${esc(new Date(m.createdAt).toLocaleString())}">${esc(time)}</time></div></div>`;
+    let line,fold='',more=false;
+    if(!m.reply&&m.messageKind==='handoff'){line=askLine(to,m.title);fold='Brief';more=true;}
+    else{
+      const {first,more:rest}=opening(m.body);
+      line=`**@${to}** ${first}`;more=rest;fold='More';
+    }
+    // Whether Chief accepted the work or sent it back is a small word beside the name; the message itself reads as Chief wrote it.
+    const tag=m.verdict==='accepted'?'<span class="team-chat-tag">accepted</span>':m.verdict==='sent back'?'<span class="team-chat-tag is-back">sent back</span>':'';
+    const body=`<div class="reply-markdown team-chat-line">${BuddyMarkdown.render(line)}</div>${more?`<details class="team-chat-more"><summary>${fold}</summary><div class="reply-markdown">${BuddyMarkdown.render(m.body)}</div></details>`:''}`;
+    return `<div class="message bot-message team-chat-contribution team-chat-agent-message ${m.verdict==='sent back'?'is-sent-back':''}">${avatar(m.agentId,true)}<div class="bot-bubble"><div class="team-chat-author">${author}${tag}</div>${body}<time title="${esc(new Date(m.createdAt).toLocaleString())}">${esc(time)}</time></div></div>`;
   }
   // The overview above the work says who was chosen to bring the reply together; with agents answering for themselves nobody does.
   if(typeof window.teamworkBody==='function'){

@@ -167,9 +167,6 @@
     const structured=rows.length>=2&&rows.length>=lines.length-1,lead=structured&&!labelled.test(lines[0])?lines[0]:'';
     return {summary:lead,rows:structured?rows.map(r=>({label:r[1].trim(),text:r[2].trim()})):[],prose:structured?'':report};
   }
-  // Rows of a report that are the team's record rather than news for the person (where the files went, what Chief decided and why): they fold
-  // under Details. The files themselves show on the card.
-  const recordRow=r=>/^(?:outputs?|files?|deliverables?|decisions?|evidence|receipts?|hashes)$/i.test(r.label);
   // A question to the person: the question itself, then what led to it. Chief's questions opened with the state of the work ("Stage 5
   // remains PARTIAL. Vera verified … May we accept …?"), and all of it was the heading. The first sentence that asks is the heading (the first
   // sentence when none does); the rest reads under it, folded once it runs long.
@@ -185,15 +182,21 @@
   };
   const CATEGORY={credential:'a sign-in',money_out:'money',third_party:'something sent in your name',objective:'a change to the plan',personal_fact:'something only you know'};
   const check='<svg class="plan-card-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  // What comes after a finished stage, said once the person has chosen: started, done, or the choice to make, with its two buttons.
-  function aheadHTML(plan,stage,{busy=false}={}){
+  // What comes after a finished stage, in a few words beside the report: started, done, the last stage, or the person's choice with its two
+  // buttons.
+  function aheadLine(plan,stage,{busy=false}={}){
     const next=stage&&stagesOf(plan).find(s=>Number(s.n)===Number(stage.n)+1);
-    if(!next)return `<div class="plan-card-foot"><span>That was the last stage of the plan.</span></div>`;
-    const title=`<span class="plan-card-next"><span>Next ·</span> Stage ${Number(next.n)} — ${esc(next.title)}</span>`;
-    const started=next.status==='done'?`Stage ${Number(next.n)} is done`:scopeActive(plan)&&Number(plan.scope.through)>=Number(next.n)||['approved','working','review'].includes(next.status)?`Stage ${Number(next.n)} started`:'';
-    if(started)return `<div class="plan-card-foot">${title}<span class="plan-card-settled">${check}${started}</span></div>`;
+    if(!next)return `<span class="plan-card-note">That was the last stage.</span>`;
+    const n=Number(next.n),started=next.status==='done'?`Stage ${n} is done`:scopeActive(plan)&&Number(plan.scope.through)>=n||['approved','working','review'].includes(next.status)?`Stage ${n} started`:'';
+    if(started)return `<span class="plan-card-settled">${check}${started}</span>`;
     const choosing=['draft','holding'].includes(plan.status),off=busy?' disabled':'';
-    return `<div class="plan-card-foot">${title}${choosing?`<span class="plan-card-actions"><button type="button" class="border-button" data-plan-change="${Number(next.n)}"${off}>Change plan</button><button type="button" class="primary-button" data-plan-authorize="${Number(next.n)}"${off}>Get stage ${Number(next.n)} done</button></span>`:''}</div>`;
+    return choosing?`<span class="plan-card-actions"><button type="button" class="primary-button" data-plan-authorize="${n}"${off}>Get stage ${n} done</button><button type="button" class="small-link" data-plan-change="${n}"${off}>Change plan</button></span>`:`<span class="plan-card-note">Next: stage ${n}</span>`;
+  }
+  // The first sentence of what an agent wrote, as plain text: Markdown marks and link addresses dropped, never cut inside a word.
+  function firstLine(text,max=200){
+    const plain=String(text||'').replace(/\[([^\]\n]*)\]\((?:<[^>\n]*>|[^)\s]*)\)/g,'$1').replace(/[*_`#]+/g,'').replace(/\s+/g,' ').trim();
+    const end=plain.search(/[.!?](?=\s|$)/),first=end>=0&&end<max?plain.slice(0,end+1):plain.length<=max?plain:plain.slice(0,max-10).replace(/\s+\S*$/,'')+'…';
+    return {first,more:plain.length>first.length+1};
   }
   // A plan notice as a card in the chat: a stage report, a question for the person, a stuck notice, or (an authorization) one status line. A
   // notice whose plan is no longer known, or of another kind, is null and stays a plain message.
@@ -205,25 +208,39 @@
       return {line:true,html:m?`<strong>${esc(m[1])}</strong><span> · working on ${esc(m[2])}</span>`:`<span>${esc(short(text,160))}</span>`};
     }
     if(kind==='stage_report'){
+      // Like a teammate saying it in a Slack channel: which stage, and the point in a sentence. What it was checked against ("Done when"), the
+      // rest of the report and its files are a click away; it used to be a big card with all of that open.
       const stage=stageOfNotice(plan,notice,text),{summary,rows,prose}=splitReport(text),done=stage?.status==='done';
       const criteria=Array.isArray(stage?.acceptance)&&stage.acceptance.length?`<div class="plan-card-section"><span class="plan-card-label">Done when</span><ul class="plan-card-criteria">${stage.acceptance.map(a=>`<li class="${done?'met':''}">${done?check:'<span class="plan-card-open" aria-hidden="true"></span>'}<span>${esc(a)}</span></li>`).join('')}</ul></div>`:'';
-      const shown=rows.filter(r=>!recordRow(r)),kept=rows.filter(recordRow),dl=list=>`<dl class="plan-card-rows">${list.map(r=>`<dt>${esc(r.label)}</dt><dd>${esc(r.text)}</dd>`).join('')}</dl>`;
-      const body=rows.length?`${summary?`<p class="plan-card-summary">${esc(summary)}</p>`:''}${shown.length?dl(shown):''}${kept.length?`<details class="plan-card-more"><summary>Details</summary>${dl(kept)}</details>`:''}`:prose?`<div class="reply-markdown plan-card-prose">${markdown(prose)}</div>`:'';
-      const head=stage?`<header class="plan-card-head"><h3>Stage ${Number(stage.n)} · ${esc(stage.title)}</h3>${done?`<span class="plan-chip done">Done</span>`:''}</header>`:'';
-      return {label:'Stage report',html:`<article class="plan-card plan-card-report">${head}${body}${criteria}${filesHTML?`<div class="plan-card-section plan-card-files"><span class="plan-card-label">Files</span>${filesHTML}</div>`:''}${stage?aheadHTML(plan,stage,{busy}):''}</article>`};
+      const report=rows.length?`${summary?`<p class="plan-card-summary">${esc(summary)}</p>`:''}<dl class="plan-card-rows">${rows.map(r=>`<dt>${esc(r.label)}</dt><dd>${esc(r.text)}</dd>`).join('')}</dl>`:prose?`<div class="reply-markdown plan-card-prose">${markdown(prose)}</div>`:'';
+      const {first}=firstLine(summary||rows[0]?.text||prose);
+      const what=stage?`Stage ${Number(stage.n)}${done?' is done':''}`:'Stage report';
+      const files=filesHTML?`<div class="plan-card-section plan-card-files"><span class="plan-card-label">Files</span>${filesHTML}</div>`:'';
+      const more=report||criteria||files?`<details class="plan-card-more"><summary>Details</summary><div class="plan-card-more-body">${report}${criteria}${files}</div></details>`:'';
+      // A report that opens by naming its stage ("Stage 5 is done: …") is its own first line; otherwise the line says which stage it is.
+      const named=stage&&new RegExp(`^stage\\s+${Number(stage.n)}\\b`,'i').test(first);
+      return {label:'Stage report',html:`<article class="plan-card plan-card-report plan-card-compact"><p class="plan-card-line">${named?esc(first):`<strong>${esc(what)}</strong>${first?` · ${esc(first)}`:''}`}</p><div class="plan-card-row">${more}${stage?aheadLine(plan,stage,{busy}):''}</div></article>`};
     }
     if(kind==='escalation'){
       const question=String(refs.question||text.replace(/\s*My recommendation:[\s\S]*$/,'')).trim(),recommendation=String(refs.recommendation||'').trim();
       const what=CATEGORY[refs.category],status=notice?.status||'open';
       // Answered (or withdrawn), a question leaves the chat: only one still waiting on the person is drawn.
       if(status!=='open')return {hidden:true};
-      const advice=recommendation?`<div class="plan-card-advice"><span class="plan-card-label">${esc(message.whoName||'Chief')} recommends</span><p>${esc(recommendation)}</p></div>`:'';
-      const open=!!reply?.open,id=esc(notice?.id||'');
-      const foot=`<div class="plan-card-foot plan-card-decide">${recommendation?`<button type="button" class="primary-button" data-plan-answer="approve" data-notice="${id}"${off}>Approve</button><button type="button" class="border-button" data-plan-answer="disapprove" data-notice="${id}"${off}>Disapprove</button>`:''}<button type="button" class="${recommendation?'small-link':'primary-button'}" data-plan-answer="reply" data-notice="${id}" aria-expanded="${open}"${off}>Reply</button><span class="plan-card-note">The team keeps working on the rest meanwhile.</span></div>${open?`<form class="plan-card-reply" data-plan-reply="${id}"><label><span class="plan-card-label">Your answer</span><textarea rows="3" maxlength="2000" data-plan-reply-text="${id}">${esc(reply?.draft||'')}</textarea></label><button type="submit" class="primary-button"${off}>Send answer</button></form>`:''}`;
-      const {ask,context}=askParts(question),why=!context?'':context.length<=240?`<p class="plan-card-context">${esc(context)}</p>`:`<details class="plan-card-more"><summary>Details</summary><p class="plan-card-context">${esc(context)}</p></details>`;
-      return {label:'Decision',html:`<article class="plan-card plan-card-decision open"><span class="plan-card-badge">Needs your decision${what?` · ${esc(what)}`:''}</span><h3>${esc(ask||question)}</h3>${why}${advice}${foot}</article>`};
+      const who=esc(message.whoName||'Chief'),open=!!reply?.open,id=esc(notice?.id||''),{ask,context}=askParts(question);
+      const buttons=`${recommendation?`<button type="button" class="primary-button" data-plan-answer="approve" data-notice="${id}"${off}>Approve</button><button type="button" class="border-button" data-plan-answer="disapprove" data-notice="${id}"${off}>Disapprove</button>`:''}<button type="button" class="${recommendation?'small-link':'primary-button'}" data-plan-answer="reply" data-notice="${id}" aria-expanded="${open}"${off}>Reply</button>`;
+      const form=open?`<form class="plan-card-reply" data-plan-reply="${id}"><label><span class="plan-card-label">Your answer</span><textarea rows="3" maxlength="2000" data-plan-reply-text="${id}">${esc(reply?.draft||'')}</textarea></label><button type="submit" class="primary-button"${off}>Send answer</button></form>`:'';
+      const more=context?`<details class="plan-card-more"><summary>Details</summary><p class="plan-card-context">${esc(context)}</p></details>`:'';
+      return {label:'Decision',html:`<article class="plan-card plan-card-decision open plan-card-compact"><p class="plan-card-line"><span class="plan-card-badge">Needs you${what?` · ${esc(what)}`:''}</span> <strong>${esc(ask||question)}</strong></p>${recommendation?`<p class="plan-card-suggest">${who} suggests: ${esc(recommendation)}</p>`:''}<div class="plan-card-row">${more}<span class="plan-card-actions">${buttons}</span></div>${form}</article>`};
     }
-    if(kind==='stuck')return {label:'Stuck',html:`<article class="plan-card plan-card-stuck"><span class="plan-card-badge">The team is stuck</span><p>${esc(text.replace(/\s*Tell me how to proceed\.?\s*$/,''))}</p><div class="plan-card-foot"><button type="button" class="primary-button" data-plan-answer="chat">Tell ${esc(message.whoName||'Chief')} how to go on</button></div></article>`};
+    if(kind==='stuck'){
+      // One plain line, like any other notice: what the team is stuck on (without the stage's long title) and a way to tell Chief. The whole
+      // reason shows on hover when the line cuts it.
+      const titles=stagesOf(plan).flatMap(s=>[`Stage ${Number(s.n)} — ${s.title}`,...(Array.isArray(s.tasks)?s.tasks:[]).map(t=>t?.title)]).filter(Boolean).sort((a,b)=>b.length-a.length);
+      let why=text.replace(/\s*Tell me how to proceed\.?\s*$/,'');const on=titles.find(t=>why.startsWith(`The team is stuck on ${t}: `));
+      why=on?why.slice(`The team is stuck on ${on}: `.length):why.replace(/^The team is stuck on [^:]*:\s*/,'');
+      const {first,more}=firstLine(why,160);
+      return {line:true,label:'Stuck',html:`<strong class="plan-stuck-mark">Stuck</strong><span${more?` title="${esc(why)}"`:''}> · ${esc(first)}</span> <button type="button" class="small-link" data-plan-answer="chat">Tell ${esc(message.whoName||'Chief')}</button>`};
+    }
     return null;
   }
   // Notices the plan marks for the chat, not yet in it: each goes to the group's chat, or to the supervisor's own chat for a plan with no group.
@@ -301,7 +318,7 @@
     return `<button type="button" class="stage-strip tone-${TONE[runState(plan)]||'idle'}${offline?' offline':''}" data-chat-view="plan" data-stage-strip="${esc(plan.id)}" aria-label="Open the plan. ${esc(said)}"><span class="stage-segs" aria-hidden="true">${stagesOf(plan).map(seg).join('')}</span><span class="plan-banner">${esc(said)}</span>${offline?'<span class="stage-offline">May be out of date</span>':''}${arrow}</button>`;
   }
 
-  const api={planFor,stageChip,taskChip,banner,noticesToDeliver,deliverNotices,stripHTML,stageStripHTML,currentStage,replyOutcome,tone,stageDeliverables,noticeFiles,splitReport,askParts,noticeCard};
+  const api={planFor,stageChip,taskChip,banner,noticesToDeliver,deliverNotices,stripHTML,stageStripHTML,currentStage,replyOutcome,tone,stageDeliverables,noticeFiles,splitReport,askParts,firstLine,noticeCard};
   root.BuddyPlan=api;if(typeof module!=='undefined')module.exports=api;
   if(typeof document==='undefined')return;
 
@@ -456,7 +473,7 @@
       const plan=current().plans.find(p=>p?.id===m.planId),noticeId=String(m.id||'').replace(/^plan-notice-/,'');
       const card=plan?noticeCard(plan,{...m,whoName:agent?.name},{filesHTML:root.BuddyFiles?.cards?.(files)||'',markdown:s=>BuddyMarkdown.render(s),busy,reply:replies.get(noticeId)}):null;
       if(card?.hidden)return '';
-      if(card?.line)return `<div class="message plan-status-line" data-plan-card="${esc(plan.id)}"><p><span class="plan-dot" aria-hidden="true"></span>${card.html}${m.time?`<time>${esc(m.time)}</time>`:''}</p></div>`;
+      if(card?.line)return `<div class="message plan-status-line${card.label==='Stuck'?' is-stuck':''}" data-plan-card="${esc(plan.id)}"><p><span class="plan-dot" aria-hidden="true"></span>${card.html}${m.time?`<time>${esc(m.time)}</time>`:''}</p></div>`;
       if(card){
         const author=group?(typeof authorColor==='function'?`<button type="button" class="message-author" style="${authorColor(agent)}" data-action="agent-info" data-id="${esc(agent.id)}">${esc(agent.name)}</button>`:`<strong>${esc(agent.name)}</strong>`):'';
         return `<div class="message bot-message plan-notice plan-card-message${group?' team-chat-contribution':''}" data-plan-card="${esc(plan.id)}">${group?avatar(agent.id,true):''}<div class="bot-bubble">${group?`<div class="team-chat-author">${author}<span>${esc(card.label)}</span></div>`:''}${card.html}<time>${esc(m.time||'')}</time></div></div>`;

@@ -117,3 +117,23 @@
   .plan-card .primary-button,.plan-card .border-button,.plan-card .small-link{min-height:44px}
   .plan-card-message .bot-bubble{max-width:calc(100% - 28px)}
 }
+
+/* Plan notices as short chat messages: the person asked for a Slack-like group chat, easygoing and minimal, with details at request. A stage
+   report and a question are a bubble like any agent's, one line and its buttons, the rest under Details; a stuck notice is one status line. */
+.plan-card-compact{gap:8px;padding:10px 14px;border-color:transparent;border-radius:20px 20px 20px 6px;background:var(--bubble,var(--soft));font-size:15px;line-height:1.45}
+.plan-card-compact.plan-card-decision.open{background:var(--card);border-color:var(--warn-line)}
+.plan-card-line{margin:0;overflow-wrap:anywhere}
+.plan-card-line .plan-card-badge{display:inline-flex;margin-right:4px;vertical-align:1px}
+.plan-card-suggest{margin:0;font-size:13.5px;color:var(--text1)}
+.plan-card-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.plan-card-compact .plan-card-more[open]{flex-basis:100%}
+.plan-card-compact .plan-card-more>summary{display:inline-flex;align-items:center;min-height:30px;padding:4px 12px;border:1px solid var(--line-strong);border-radius:999px;color:var(--text1);font-size:12.5px;list-style:none}
+.plan-card-compact .plan-card-more>summary::-webkit-details-marker{display:none}
+.plan-card-compact .plan-card-more[open]>summary{margin-bottom:0}
+.plan-card-more-body{display:flex;flex-direction:column;gap:12px;margin-top:10px}
+.plan-card-compact .primary-button,.plan-card-compact .border-button{min-height:32px;padding:5px 14px;font-size:12.5px}
+.plan-card-compact .plan-card-note{flex:0 1 auto}
+.plan-status-line.is-stuck .plan-dot{background:var(--warn)}
+.plan-stuck-mark{color:var(--warn);font-weight:600}
+.plan-status-line .small-link{padding:0 4px;font:inherit;color:var(--text1);text-decoration:underline;text-underline-offset:3px;background:none;border:0;cursor:pointer}
+.plan-status-line.is-stuck{max-width:760px}
