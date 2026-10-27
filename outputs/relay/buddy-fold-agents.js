@@ -57,16 +57,29 @@
     }
     return out;
   }
-  function mood(id,talking){
+  // Who is starting a reply: a direct chat whose run has begun, or the lead of a group run.
+  function starters(){
+    const s=live(),out=new Set();if(!s)return out;
+    for(const run of Object.values(s.runs||{})){
+      if(!['starting','answering'].includes(run?.status))continue;
+      const group=(s.groups||[]).find(g=>g.id===run.target);
+      out.add(group?run.team?.leadId||(run.memberIds||group.members||[])[0]:run.target);
+    }
+    return out;
+  }
+  // Only what the agent is doing itself moves it: a task running, a reply being started or written. "Planning" also covers work that only
+  // waits (queued, retrying later, a result waiting for the supervisor's verdict); those agents rest, so their figures stay still (27 Oct:
+  // Chief's and Lyra's peels kept moving while their finished results waited for Chief).
+  function mood(id,talking,starting=new Set()){
     const mode=F.getMode?F.getMode(id):'ready';
     if(mode==='done')return 'done';
     if(talking.has(id))return 'talking';
-    return mode==='planning'||mode==='working'?'thinking':'idle';
+    return mode==='working'||(mode==='planning'&&starting.has(id))?'thinking':'idle';
   }
   function step(dt){
-    const talking=talkers(),still=calm.matches;
+    const talking=talkers(),starting=starters(),still=calm.matches;
     for(const a of live()?.agents||[]){
-      const m=sim(a.id);m.want=mood(a.id,talking);
+      const m=sim(a.id);m.want=mood(a.id,talking,starting);
       m.t+=still?0:dt;
       for(const q of ['thinking','talking','done']){const target=m.want===q?1:0;m.p[q]=still?target:m.p[q]+(target-m.p[q])*Math.min(1,dt*5);}
     }
@@ -121,5 +134,5 @@
   // The theme changes the inks: repaint everything, the still pictures too.
   new MutationObserver(()=>{for(const el of document.querySelectorAll('canvas.fold-fig')){delete el.dataset.foldPainted;paint(el);}}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
   raf=requestAnimationFrame(frame);
-  root.BuddyFoldAgents={look,mood,paint};
+  root.BuddyFoldAgents={look,mood,paint,current:id=>mood(id,talkers(),starters())};
 })(typeof window!=='undefined'?window:globalThis);
