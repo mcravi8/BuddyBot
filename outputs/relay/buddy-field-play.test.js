@@ -7,6 +7,11 @@ const E=Figures.engine;
 // A repeatable source of "random" numbers.
 const seeded=(seed=1)=>()=>{seed=(seed*16807)%2147483647;return seed/2147483647;};
 
+test('the background patterns are off for now; their code is kept',()=>{
+  assert.equal(Play.PATTERNS,false);
+  assert.equal(typeof Play.saverAt,'function');assert.equal(typeof Play.saverCells,'function');
+});
+
 test('the background patterns form, hold, fade and rest, and never repeat the pattern that just ended',()=>{
   const random=seeded(7);
   let {sv,k}=Play.saverAt(null,0,random);
