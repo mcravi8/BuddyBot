@@ -138,13 +138,20 @@
     const done=list.find(i=>i.kind==='finished'&&i.unread&&(i.taskId||i.routineId)&&mine(i));
     return done?{kind:'done',text:`Done · ${done.title}`}:null;
   }
-  // The bell shows only what needs the person, in the sidebar in place of the chat list, each alert opening what it is about; pressed again,
-  // or Show all, the chats come back. What is working or done the rows already say.
+  // The bell shows only what needs the person, on a board floating by it (under the bell, or beside the narrow sidebar), each alert opening
+  // what it is about; the bell again, Escape, a click elsewhere or choosing an alert closes it. What is working or done the rows already say.
+  // (27 Oct: the list first took the chat list's place in the sidebar, which did not fit the narrow sidebar; the person chose the board.)
   let needsOnly=false;
+  // One alert that needs the person, as the bell's board and Background work show it.
+  const entry=i=>`<button type="button" class="activity-item needs-entry ${i.unread?'unread':''}" data-activity-id="${esc(i.id)}" ${opens(i)}><span class="needs-figure">${i.agentId&&findAgent(i.agentId)?avatar(i.agentId,true):i.groupId?groupAvatar(i.groupId,true):icon('info')}</span><span class="needs-copy"><strong>${esc(i.title)}</strong><span class="activity-description">${esc(i.description)}</span>${i.note?`<span class="activity-note">${esc(i.note)}</span>`:''}<span class="needs-action">${esc(i.actionLabel||'Review')}</span></span></button>`;
+  api.entry=entry;
+  // What needs the person: the one list the bell, the rows and Background work all read (27 Oct: Background work used to count every
+  // failed or waiting task, so it listed work Chief was handling or the person had dismissed, and disagreed with the bell).
+  api.needItems=()=>all().filter(i=>i.kind==='needs');
   function needsList(list){
     const need=list.filter(i=>i.kind==='needs');
-    return `<div class="needs-filter-head"><strong>Needs you${need.length?` · ${need.length}`:''}</strong><button type="button" class="small-link" data-needs-off>Show all</button></div>`
-      +(need.length?need.map(i=>`<button type="button" class="activity-item needs-entry ${i.unread?'unread':''}" data-activity-id="${esc(i.id)}" ${opens(i)}><span class="needs-figure">${i.agentId&&findAgent(i.agentId)?avatar(i.agentId,true):i.groupId?groupAvatar(i.groupId,true):icon('info')}</span><span class="needs-copy"><strong>${esc(i.title)}</strong><span class="activity-description">${esc(i.description)}</span>${i.note?`<span class="activity-note">${esc(i.note)}</span>`:''}<span class="needs-action">${esc(i.actionLabel||'Review')}</span></span></button>`).join(''):'<p class="needs-empty">Nothing needs you.</p>')
+    return `<div class="needs-filter-head"><strong>Needs you${need.length?` · ${need.length}`:''}</strong><button type="button" class="small-link" data-needs-off>Close</button></div>`
+      +(need.length?need.map(entry).join(''):'<p class="needs-empty">Nothing needs you.</p>')
       +'<button type="button" class="small-link needs-all" data-needs-all>All notifications</button>';
   }
   function paint(){
@@ -164,17 +171,19 @@
       if(use)snip.dataset.stateText=text;else delete snip.dataset.stateText;
       for(const k of ['needs','working','done'])snip.classList.toggle('row-'+k,!!use&&st.kind===k);
     }
-    const side=document.querySelector('.sidebar');
-    if(side){
-      side.classList.toggle('needs-only',needsOnly);
-      document.querySelectorAll('.activity-nav[data-activity-open]').forEach(b=>{b.classList.toggle('is-on',needsOnly);b.setAttribute('aria-pressed',String(needsOnly));});
-      let box=side.querySelector('[data-needs-filter]');
-      if(needsOnly){
-        const chats=side.querySelector('.chat-list');
-        if(!box&&chats){box=document.createElement('div');box.className='needs-filter';box.dataset.needsFilter='';box.setAttribute('role','region');box.setAttribute('aria-label','Needs you');chats.before(box);}
-        const html=needsList(list);if(box&&box.dataset.html!==html){box.innerHTML=html;box.dataset.html=html;}
-      }else box?.remove();
-    }
+    document.querySelectorAll('.activity-nav[data-activity-open]').forEach(b=>{b.classList.toggle('is-on',needsOnly);b.setAttribute('aria-pressed',String(needsOnly));});
+    let box=document.querySelector('[data-needs-filter]');
+    if(!needsOnly){box?.remove();return;}
+    if(!box){box=document.createElement('div');box.className='needs-filter';box.dataset.needsFilter='';box.setAttribute('role','dialog');box.setAttribute('aria-label','Needs you');document.body.appendChild(box);}
+    const html=needsList(list);if(box.dataset.html!==html){box.innerHTML=html;box.dataset.html=html;}
+    place(box);
+  }
+  // The board hangs under the bell, or beside the sidebar when it is narrow, and stays inside the window.
+  function place(box){
+    const bellEl=document.querySelector('.sidebar .activity-nav'),side=document.querySelector('.sidebar');if(!bellEl||!side)return;
+    const b=bellEl.getBoundingClientRect(),sr=side.getBoundingClientRect(),narrow=!!document.querySelector('.shell.sidebar-compact');
+    const left=narrow?sr.right+8:b.left-24,top=narrow?b.top:b.bottom+8;
+    box.style.left=`${Math.round(Math.max(8,Math.min(innerWidth-box.offsetWidth-8,left)))}px`;box.style.top=`${Math.round(Math.max(8,Math.min(innerHeight-box.offsetHeight-8,top)))}px`;
   }
   api.paint=paint;
   // On the page, from the live list (the same items, keys, read and dismissed state as the bell).
@@ -193,14 +202,20 @@
   api.acceptWorker=value=>{if(value.workspace!==state.conversationWorkspace)return;worker={...value,notifications:{...(value.notifications||{})}};workerError='';changed();};
   api.acceptTeam=value=>{if(value.workspace!==state.conversationWorkspace)return;team=value;changed();};
   api.workerError=error=>{workerError=String(error||'');changed();};
-  api.open=()=>{needsOnly=true;paint();document.querySelector('.sidebar [data-needs-filter]')?.scrollIntoView?.({block:'nearest'});};
+  api.open=()=>{needsOnly=true;paint();};
   api.close=()=>{needsOnly=false;paint();};
   // Every alert in one list, with its tabs: kept for the Background work page and anything that still asks for it.
   api.openAll=()=>{needsOnly=false;paint();const kinds=new Set(all().map(i=>i.kind));tab=kinds.has('needs')?'needs':kinds.has('working')?'working':'finished';openDrawer('Notifications','<div data-activity-panel></div>');draw();};
   function repaintSidebar(){const old=document.querySelector('.sidebar');if(!old)return;old.outerHTML=sidebar();bindSidebarSearch();paint();}
   document.addEventListener('click',e=>{
     const bell=e.target.closest('[data-activity-open]');if(bell){if(bell.classList.contains('activity-nav')&&needsOnly)api.close();else api.open();return;}
-    if(e.target.closest('[data-needs-off]')){api.close();return;}
+    if(e.target.closest('[data-needs-off]')){api.close();document.querySelector('.activity-nav')?.focus();return;}
+    if(needsOnly){
+      const board=document.querySelector('[data-needs-filter]');
+      if(board&&board.contains(e.target)){if(e.target.closest('.needs-entry,[data-needs-all]'))setTimeout(api.close,0);}
+      else if(!e.target.closest('[data-activity-open]'))api.close();
+    }
+    if(e.target.closest('[data-action="sidebar-layout"]'))[0,450].forEach(ms=>setTimeout(()=>{const board=document.querySelector('[data-needs-filter]');if(board)place(board);},ms));
     if(e.target.closest('[data-needs-all]')){api.openAll();return;}
     const choice=e.target.closest('[data-activity-tab]');if(choice){tab=choice.dataset.activityTab;draw();document.querySelector(`[data-activity-tab="${tab}"]`)?.focus();return;}
     const toggle=e.target.closest('[data-activity-toggle]');if(toggle){const item=all().find(i=>i.id===toggle.dataset.activityToggle);if(item)setState([item.id],{read:item.unread});return;}
@@ -212,7 +227,8 @@
     const chat=e.target.closest('[data-action="chat"]');if(chat){const ids=all().filter(i=>i.kind==='finished'&&i.unread&&(i.target===chat.dataset.id||i.agentId===chat.dataset.id)).map(i=>i.id);if(ids.length)setState(ids,{read:true});}
     if(e.target.closest('[data-activity-refresh]'))window.BuddyWorkerUI?.refresh();
   });
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&needsOnly&&!document.querySelector('.modal-overlay')&&e.target.closest?.('.sidebar')){api.close();document.querySelector('.activity-nav')?.focus();}});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&needsOnly&&!document.querySelector('.modal-overlay')){api.close();document.querySelector('.activity-nav')?.focus();}});
+  window.addEventListener('resize',()=>{const board=document.querySelector('[data-needs-filter]');if(board)place(board);});
   document.addEventListener('keydown',e=>{if(!e.target.matches('[data-activity-tab]')||!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const order=['needs','working','finished'],at=order.indexOf(tab);tab=e.key==='Home'?'needs':e.key==='End'?'finished':order[(at+(e.key==='ArrowRight'?1:order.length-1))%order.length];draw();document.querySelector(`[data-activity-tab="${tab}"]`)?.focus();});
   document.addEventListener('toggle',e=>{if(e.target.matches?.('.hidden-agents')&&!ui.chatFilter){state.hiddenAgentsOpen=e.target.open;save();}},true);
   // Opening a chat is reading what it has been telling you: its unread signal goes away (the alerts stay listed, and nothing is approved).

@@ -308,6 +308,16 @@ test('the Work page has one row per piece of work: a plan task’s runs are one 
  assert.deepEqual(worker.workGroups([{title:'no id'},null]),{needs:[],running:[],finished:[]},'only real tasks count');
 });
 
+test('given the bell’s list, Background work’s Needs you is exactly what is on it',()=>{
+ const at=m=>new Date(Date.parse('2026-10-27T12:00:00Z')-m*60000).toISOString();
+ const tasks=[{id:'a',title:'Waits for the person',status:'waiting_user',updatedAt:at(1)},{id:'b',title:'Chief is handling it',status:'failed',updatedAt:at(2)},
+  {id:'c',title:'Retries by itself',status:'failed',recovery:{state:'pending'},updatedAt:at(3)},{id:'d',title:'Running',status:'running',updatedAt:at(4)},{id:'e',title:'Done',status:'completed',updatedAt:at(5)}];
+ const g=worker.workGroups(tasks,new Set(['a']));
+ assert.deepEqual(g.needs.map(r=>r.latest.id),['a'],'only what the bell lists');
+ assert.deepEqual(g.running.map(r=>r.latest.id),['c','d'],'retrying by itself counts as running');
+ assert.deepEqual(g.finished.map(r=>r.latest.id),['b','e'],'a stop that does not need the person is not Needs you');
+});
+
 test('a waiting approval or question stays in the chat only while its task still waits on the person',()=>{
  const s={conversationWorkspace:'w',agents:[{id:'forge'}],messages:{}},t={id:'job',workspace:'w',agentId:'forge',title:'Run S02c',status:'waiting_user',attempt:2,progress:'Which RunPod account should I use?',updatedAt:'2026-10-23T21:30:00Z'};
  assert.equal(worker.deliverResult(s,t),true);const m=s.messages.forge[0];

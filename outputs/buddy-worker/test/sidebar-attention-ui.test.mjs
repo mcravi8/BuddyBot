@@ -13,38 +13,68 @@ test('rows say their state, the bell lists what needs you, and + offers Create a
    state.agents=[{id:'chief',name:'Chief',role:'Chief of staff',avatarShape:'diamond',avatarColor:'lilac',setupStatus:'ready',tools:{}},{id:'inbox',name:'Inbox',role:'Email',avatarShape:'sphere',avatarColor:'blue',setupStatus:'ready',tools:{}},{id:'lyra',name:'Lyra',role:'Writer',avatarShape:'hex',avatarColor:'peach',setupStatus:'ready',tools:{}},{id:'forge',name:'Forge',role:'Engineer',avatarShape:'capsule',avatarColor:'cobalt',setupStatus:'ready',tools:{}}];
    state.groups=[];state.onboarding={status:'completed',agentId:'chief'};state.runs={};state.tasks=[];state.proposals=[];
    state.messages={chief:[{id:'1',who:'chief',body:'I’ve reassigned the export.',time:'14:56'}],inbox:[],lyra:[],forge:[]};
-   window.calls=[];BuddyDesktop={saveState:async()=>({saved:true}),worker:async p=>{calls.push(p);return p.operation==='routine'?{routine:{id:'r1',title:p.arguments.title,status:'active'}}:p.operation==='create'?{task:{id:'new',status:'queued'}}:{workspace:state.conversationWorkspace,tasks:[],routines:[],decisions:[],notifications:{}};}};
-   ui.view={kind:'chat',target:'chief'};render();
-   BuddyActivity.acceptWorker({workspace:state.conversationWorkspace,routines:[],notifications:{},
-    decisions:[{id:'stopped:t1',kind:'stopped',agentId:'inbox',taskId:'t1',title:'Check AgentMail and Gmail',question:'The selected AI connection needs reconnecting',actionLabel:'Open task',audience:'user',createdAt:'2026-10-27T20:00:00Z'}],
+   // The worker as the app reports it: Inbox's stop needs the person; the VIX re-run's stop is Chief's (its lane is running); a change waits
+   // for the person's OK.
+   window.fx={workspace:state.conversationWorkspace,online:true,routines:[],notifications:{},supervisorLane:{online:true},
+    decisions:[{id:'stopped:t1',kind:'stopped',agentId:'inbox',taskId:'t1',title:'Check AgentMail and Gmail',question:'The selected AI connection needs reconnecting',actionLabel:'Open task',audience:'user',createdAt:'2026-10-27T20:00:00Z'},
+               {id:'stopped:t4',kind:'stopped',agentId:'chief',taskId:'t4',title:'Omori VIX pipeline re-run',question:'The coding session returned no final summary.',audience:'supervisor',createdAt:'2026-10-27T14:56:00Z'},
+               {id:'change:c1',kind:'confirm',agentId:'chief',taskId:'',title:'Update Chief’s instructions?',question:'Replace the ask-first lines.',actionLabel:'Review change',payload:{changeId:'c1'},audience:'user',createdAt:'2026-10-27T12:00:00Z'}],
     tasks:[{id:'t1',agentId:'inbox',title:'Check AgentMail and Gmail',status:'failed',workspace:state.conversationWorkspace,updatedAt:'2026-10-27T20:00:00Z'},
            {id:'t2',agentId:'lyra',title:'Draft the new caption wording',status:'running',workspace:state.conversationWorkspace,updatedAt:'2026-10-27T20:05:00Z'},
-           {id:'t3',agentId:'forge',title:'Clean the report',status:'completed',workspace:state.conversationWorkspace,updatedAt:'2026-10-27T18:16:00Z'}]});
+           {id:'t3',agentId:'forge',title:'Clean the report',status:'completed',workspace:state.conversationWorkspace,updatedAt:'2026-10-27T18:16:00Z'},
+           {id:'t4',agentId:'chief',title:'Omori VIX pipeline re-run',status:'failed',workspace:state.conversationWorkspace,updatedAt:'2026-10-27T14:56:00Z'}]};
+   window.calls=[];BuddyDesktop={saveState:async()=>({saved:true}),worker:async p=>{calls.push(p);return p.operation==='routine'?{routine:{id:'r1',title:p.arguments.title,status:'active'}}:p.operation==='create'?{task:{id:'new',status:'queued'}}:fx;}};
+   ui.view={kind:'chat',target:'chief'};render();
+   BuddyActivity.acceptWorker(fx);
   });
   const line=id=>page.locator(`.chat-row[data-id="${id}"] .chat-snippet`).innerText();
   // Rows: what needs you, what is working, what is done; a quiet chat keeps its last message.
   assert.equal(await line('inbox'),'Needs you · Check AgentMail and Gmail');
   assert.equal(await line('lyra'),'Working · Draft the new caption wording');
   assert.equal(await line('forge'),'Done · Clean the report');
-  assert.equal(await line('chief'),'I’ve reassigned the export.');
+  assert.equal(await line('chief'),'Needs you · Update Chief’s instructions?','Chief’s row: the change waiting for the person, not the stop Chief handles');
   // A redraw of the list keeps the state lines.
   await page.evaluate(()=>repaintChatList());
   assert.equal(await line('inbox'),'Needs you · Check AgentMail and Gmail');
-  // The bell: only what needs you, in the sidebar; the chats come back with Show all, or the bell again.
+  // The bell: only what needs you, on a board floating under it; the chats stay. Close, the bell again, Escape or a click elsewhere closes it.
   const bell=page.locator('.sidebar .activity-nav');
   await bell.click();
   assert.equal(await bell.getAttribute('aria-pressed'),'true');
-  assert.equal(await page.locator('.chat-list').isVisible(),false,'the chat list steps aside');
-  const entries=page.locator('.needs-filter .needs-entry');
-  assert.equal(await entries.count(),1);
+  assert.equal(await page.locator('.chat-list').isVisible(),true,'the chats stay in the sidebar');
+  const board=page.locator('.needs-filter'),under=await page.evaluate(()=>{const b=document.querySelector('.sidebar .activity-nav').getBoundingClientRect(),f=document.querySelector('.needs-filter').getBoundingClientRect();return {below:f.top>=b.bottom,inside:f.left>=0&&f.right<=innerWidth&&f.bottom<=innerHeight};});
+  assert.deepEqual(under,{below:true,inside:true},'the board hangs under the bell, inside the window');
+  const entries=board.locator('.needs-entry');
+  assert.equal(await entries.count(),2);
   assert.match(await entries.first().innerText(),/Check AgentMail and Gmail[\s\S]*Open task/);
   assert.equal(await entries.first().getAttribute('data-worker-task'),'t1','the alert opens its task');
   assert.equal(await page.locator('.modal-overlay').count(),0,'no drawer opens');
-  await page.getByRole('button',{name:'Show all',exact:true}).click();
-  assert.equal(await page.locator('.chat-list').isVisible(),true);
+  await page.getByRole('button',{name:'Close',exact:true}).click();
   assert.equal(await page.locator('.needs-filter').count(),0);
   await bell.click();await bell.click();
-  assert.equal(await page.locator('.needs-filter').count(),0,'the bell again brings the chats back');
+  assert.equal(await page.locator('.needs-filter').count(),0,'the bell again closes it');
+  await bell.click();await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.needs-filter').count(),0,'Escape closes it');
+  await bell.click();await page.mouse.click(900,600);
+  assert.equal(await page.locator('.needs-filter').count(),0,'a click elsewhere closes it');
+  // The narrow sidebar: the board floats beside it, with the alert's words in full.
+  await page.evaluate(()=>{state.sidebarCompact=true;render();});
+  await page.locator('.sidebar .activity-nav').click();
+  const beside=await page.evaluate(()=>{const s=document.querySelector('.sidebar').getBoundingClientRect(),f=document.querySelector('.needs-filter').getBoundingClientRect();return {right:f.left>=s.right,inside:f.right<=innerWidth&&f.bottom<=innerHeight,text:document.querySelector('.needs-filter .needs-entry').innerText.replace(/\s+/g,' ')};});
+  assert.ok(beside.right&&beside.inside,'the board sits beside the narrow sidebar, inside the window');
+  assert.match(beside.text,/Check AgentMail and Gmail .* Open task/);
+  await page.keyboard.press('Escape');
+  await page.evaluate(()=>{state.sidebarCompact=false;render();});
+  // Background work's Needs you is the bell's list: the same two, and not the stop Chief handles (it is under Finished).
+  const bellSaid=(await entries.allInnerTexts()).map(t=>t.split('\n')[0]).sort();
+  await page.keyboard.press('Escape');
+  await page.locator('.sidebar [data-action="background-work"]').click();
+  const needs=page.locator('.work-section-needs');await needs.waitFor();
+  assert.equal(await needs.locator('h2 span').innerText(),'2');
+  const work=await needs.innerText();
+  for(const t of bellSaid)assert.ok(work.includes(t),`Background work lists ${t}: ${work}`);
+  assert.doesNotMatch(work,/Omori VIX pipeline re-run/);
+  assert.match(await page.locator('.work-section-finished').innerText(),/Omori VIX pipeline re-run/);
+  await page.evaluate(()=>{ui.view={kind:'chat',target:'chief'};render();});
   // +: a menu under the button, Create agent first; no list of agents; Agent suggestions only while some wait.
   await page.locator('.sidebar [data-action="new-chat"]').click();
   const rows=page.locator('.plus-menu .plus-row');
