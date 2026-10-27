@@ -63,6 +63,12 @@
   function bob(t, p) {
     return (0.5 + 0.5 * Math.sin(t * 1.3)) * 0.06 * p.thinking;
   }
+  // Where the eyes look (in head radii) and how open they are. A resting figure keeps them open and looking ahead: its glancing and blinking
+  // still read as an agent at work (27 Oct). Working, they look around and blink; talking, they blink.
+  function eyes(t, p) {
+    const k = p.thinking, g = glance(t * (1 + 0.15 * k)), x = k ? g[0] * k : 0, y = k ? g[1] * k : 0, squint = y < -0.09 ? 0.85 : 1;
+    return { x, y, open: lerp(1, blinkAt(t), Math.min(1, p.thinking + p.talking)) * lerp(1, squint, p.thinking) };
+  }
   function body(c, u, t, p, o, col, size) {
     const S = SHAPES[o.shape] || SHAPES.hex, rw = u * 0.2, B = u * 4;
     const ang = S.ang[o.side === 'left' ? 1 : 0], nx = Math.cos(ang), ny = Math.sin(ang);
@@ -85,9 +91,8 @@
     }
     c.restore();
     const sc = S.rs || 1, ey = u * (S.ey - 0.03) - u * 0.05 * p.talking;
-    const g = glance(t * (1 + 0.15 * p.thinking)), amt = Math.max(0, 0.3 * (1 - p.thinking - p.talking - p.done)) + p.thinking;
-    const gx = g[0] * u * amt, gy = g[1] * u * amt, squint = gy < -0.09 * u ? 0.85 : 1;
-    ringEyes(c, u * 0.24 * sc, ey, u, sc, blinkAt(t) * lerp(1, squint, p.thinking), p.done, gx, gy);
+    const e = eyes(t, p);
+    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open, p.done, e.x * u, e.y * u);
     mouth(c, u * (S.ey + 0.3), u, t, p);
     if (o.details.blush && p.done > 0.01) {
       c.fillStyle = `rgba(255,255,255,${0.3 * p.done})`;
@@ -152,7 +157,7 @@
     o.details = Object.assign({ shadow: true, halftone: false, blush: false }, opts && opts.details);
     c.save(); paint(c, size, t, Object.assign({ thinking: 0, talking: 0, done: 0 }, p), o); c.restore();
   };
-  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, bob, SHAPES, COLORS, STATES };
+  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, bob, eyes, SHAPES, COLORS, STATES };
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.BuddyFold = api;
 })(typeof window !== 'undefined' ? window : globalThis);

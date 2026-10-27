@@ -23,6 +23,14 @@ test('a resting figure does not bob either (its peel looked as if it moved); a w
   assert.ok(Math.max(...working)>.03&&Math.min(...working)<.01,`working: it lifts and settles (${working})`);
 });
 
+test('a resting figure keeps its eyes open and looking ahead; working, they look around and blink',()=>{
+  const many=Array.from({length:200},(_,i)=>i*.05),look=p=>many.map(t=>Fold.eyes(t,{thinking:0,talking:0,done:0,...p}));
+  for(const e of [...look({}),...look({done:1})])assert.deepEqual(e,{x:0,y:0,open:1});
+  const working=look({thinking:1});
+  assert.ok(working.some(e=>e.x!==0||e.y!==0),'working: the eyes look around');
+  assert.ok(working.some(e=>e.open<.5),'working: it blinks');
+});
+
 test('Buddy saves the round figure as "sphere": it is the circle',()=>{
   assert.equal(Fold.SHAPES.sphere,Fold.SHAPES.circle);
   for(const id of ['square','sphere','hex','pill','arch','diamond'])assert.ok(Fold.SHAPES[id],id);
