@@ -70,6 +70,15 @@
     const k = p.thinking, g = glance(t * (1 + 0.15 * k)), x = k ? g[0] * k : 0, y = k ? g[1] * k : 0, squint = y < -0.09 ? 0.85 : 1;
     return { x, y, open: lerp(1, blinkAt(t), Math.min(1, p.thinking + p.talking)) * lerp(1, squint, p.thinking) };
   }
+  // Where the eyes turn for a pointer at (dx, dy) CSS px from the figure's centre: fully toward it within `near` px (the figure and a margin),
+  // less and less beyond, and not at all from `reach` px (less than a sidebar row, so only the figure by the pointer looks). x and y are in
+  // head radii, as the eyes' glance; w is how strongly the pointer holds them.
+  function gaze(dx, dy, reach = 60, near = 34) {
+    const d = Math.hypot(dx, dy);
+    if (!(d < reach)) return { x: 0, y: 0, w: 0 };
+    const k = Math.min(1, (reach - d) / (reach - near)), w = k * k * (3 - 2 * k), toward = Math.min(1, d / 14);
+    return d ? { x: dx / d * 0.15 * toward, y: dy / d * 0.13 * toward, w } : { x: 0, y: 0, w };
+  }
   function body(c, u, t, p, o, col, size) {
     const S = SHAPES[o.shape] || SHAPES.hex, rw = u * 0.2, B = u * 4;
     const ang = S.ang[o.side === 'left' ? 1 : 0], nx = Math.cos(ang), ny = Math.sin(ang);
@@ -92,8 +101,9 @@
     }
     c.restore();
     const sc = S.rs || 1, ey = u * (S.ey - 0.03) - u * 0.05 * p.talking;
-    const e = eyes(t, p);
-    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open, p.done, e.x * u, e.y * u);
+    // opts.look: where something near catches the eyes ({x, y} in head radii, w how strongly), over where they would look anyway.
+    const e = eyes(t, p), lk = o.look || { x: 0, y: 0, w: 0 }, w = Math.max(0, Math.min(1, lk.w || 0));
+    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open, p.done, lerp(e.x, lk.x || 0, w) * u, lerp(e.y, lk.y || 0, w) * u);
     mouth(c, u * (S.ey + 0.3), u, t, p);
     if (o.details.blush && p.done > 0.01) {
       c.fillStyle = `rgba(255,255,255,${0.3 * p.done})`;
@@ -158,7 +168,7 @@
     o.details = Object.assign({ shadow: true, halftone: false, blush: false }, opts && opts.details);
     c.save(); paint(c, size, t, Object.assign({ thinking: 0, talking: 0, done: 0 }, p), o); c.restore();
   };
-  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, bob, eyes, SHAPES, COLORS, STATES };
+  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, bob, eyes, gaze, SHAPES, COLORS, STATES };
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.BuddyFold = api;
 })(typeof window !== 'undefined' ? window : globalThis);

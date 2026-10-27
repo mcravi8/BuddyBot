@@ -36,3 +36,14 @@ test('Buddy saves the round figure as "sphere": it is the circle',()=>{
   assert.equal(Fold.SHAPES.sphere,Fold.SHAPES.circle);
   for(const id of ['square','sphere','hex','pill','arch','diamond'])assert.ok(Fold.SHAPES[id],id);
 });
+
+test('the eyes turn toward a pointer close by, most when it is near, and ignore one far away',()=>{
+  assert.deepEqual(Fold.gaze(200,0),{x:0,y:0,w:0},'far: no pull');
+  assert.deepEqual(Fold.gaze(0,80),{x:0,y:0,w:0},'at the edge of its reach: no pull');
+  const right=Fold.gaze(30,0),up=Fold.gaze(0,-30),near=Fold.gaze(30,0),less=Fold.gaze(50,0);
+  assert.equal(Fold.gaze(66,0).w,0,'a figure a sidebar row away does not look');
+  assert.ok(right.x>0&&right.y===0&&right.w>0,'a pointer to the right: the eyes look right');
+  assert.ok(up.y<0&&up.x===0,'a pointer above: the eyes look up');
+  assert.ok(near.w>less.w,'closer holds the eyes more');
+  assert.equal(Fold.gaze(0,0).x,0,'a pointer right on the figure: the eyes stay centred');
+});

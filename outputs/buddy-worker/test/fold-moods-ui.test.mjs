@@ -31,3 +31,38 @@ test('a figure moves only while its agent works: waiting rests it, a task runnin
   assert.deepEqual(errors,[]);
  }finally{await context?.close();await rm(dir,{recursive:true,force:true});}
 });
+
+// The sidebar figures near the pointer look at it; those farther away keep looking ahead (27 Oct). What the eyes follow is each figure's gaze;
+// reading the sidebar's own canvases back is not used, as Chrome smooths a canvas's edges differently once it has been read.
+test('a sidebar figure near the pointer looks at it, and one far away does not',{skip:process.platform!=='darwin'||!existsSync('/Applications/Google Chrome.app'),timeout:60000},async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'buddy-fold-gaze-'));let context;
+ try{
+  context=await chromium.launchPersistentContext(dir,{channel:'chrome',headless:true,viewport:{width:1280,height:860}});const page=context.pages()[0];
+  await page.goto(new URL('../../relay/index.html',import.meta.url).href);await page.waitForFunction(()=>!!window.BuddyFigures&&!!window.BuddyFoldAgents);
+  await page.evaluate(()=>{
+   document.getElementById('onboarding-root').innerHTML='';closeModal();
+   state.agents=[{id:'chief',name:'Chief',role:'Chief',avatarShape:'diamond',avatarColor:'lilac',setupStatus:'ready',tools:{}},{id:'lyra',name:'Lyra',role:'Writer',avatarShape:'hex',avatarColor:'peach',setupStatus:'ready',tools:{}},{id:'vera',name:'Vera',role:'Reviewer',avatarShape:'pill',avatarColor:'mint',setupStatus:'ready',tools:{}}];
+   state.groups=[];state.onboarding={status:'completed',agentId:'chief'};state.runs={};state.tasks=[];state.messages={chief:[],lyra:[],vera:[]};
+   BuddyDesktop={saveState:async()=>({saved:true})};ui.view={kind:'chat',target:'chief'};render();
+  });
+  const pull=id=>page.evaluate(id=>document.querySelector(`.chat-row[data-id="${id}"] .fig-slot canvas.fold-fig`).foldGaze?.[0]||{x:0,y:0,w:0},id);
+  await page.mouse.move(1100,700);await page.waitForTimeout(400);
+  for(const id of ['chief','lyra','vera'])assert.ok((await pull(id)).w<.01,`${id} looks ahead with the pointer far away`);
+  // Just right of Lyra's figure: Lyra looks right at it; Chief, a row up, and Vera, a row down, keep looking ahead.
+  const box=await page.locator('.chat-row[data-id="lyra"] .fig-slot canvas.fold-fig').boundingBox();
+  await page.mouse.move(box.x+box.width+18,box.y+box.height/2);await page.waitForTimeout(500);
+  const lyra=await pull('lyra');
+  assert.ok(lyra.w>.3&&lyra.x>.05&&Math.abs(lyra.y)<.02,`Lyra looks toward the pointer on its right: ${JSON.stringify(lyra)}`);
+  for(const id of ['chief','vera'])assert.ok((await pull(id)).w<.01,`${id}, a row away, keeps looking ahead`);
+  await page.mouse.move(1100,700);await page.waitForTimeout(800);
+  assert.ok((await pull('lyra')).w<.01,'with the pointer gone, Lyra looks ahead again');
+  // The drawing itself: at rest the same at any moment; a pointer close by moves the eyes; working moves the figure.
+  const diffs=await page.evaluate(()=>{
+   const shot=(t,p,look)=>{const c=document.createElement('canvas');c.width=c.height=100;const x=c.getContext('2d',{willReadFrequently:true});BuddyFold.draw(x,100,t,p,{shape:'hex',color:'#e07a2c',side:'right',look,details:{shadow:true}});return Array.from(x.getImageData(0,0,100,100).data);};
+   const diff=(a,b)=>a.filter((v,i)=>v!==b[i]).length,rest={thinking:0,talking:0,done:0},none={x:0,y:0,w:0},work={thinking:1,talking:0,done:0};
+   return {rest:diff(shot(1,rest,none),shot(13.7,rest,none)),pointer:diff(shot(1,rest,none),shot(1,rest,BuddyFold.gaze(30,0))),working:diff(shot(1,work,none),shot(1.6,work,none))};
+  });
+  assert.equal(diffs.rest,0,'a resting figure is still');
+  assert.ok(diffs.pointer>100&&diffs.working>100,`the pointer turns the eyes and work moves the figure: ${JSON.stringify(diffs)}`);
+ }finally{await context?.close();await rm(dir,{recursive:true,force:true});}
+});

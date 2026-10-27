@@ -95,19 +95,28 @@
     if(el.width!==px){el.width=px;el.height=px;}
     const c=el.getContext('2d');c.setTransform(d,0,0,d,0,0);c.clearRect(0,0,size,size);
     const still=!!el.closest('.island')||calm.matches;
-    const figure=(agent,x,y,s)=>{
+    // In the sidebar, a figure near the pointer looks at it; one farther away keeps looking ahead (Fold.gaze). Each eases there.
+    const box=pointer&&el.closest('.sidebar')?el.getBoundingClientRect():null,eased=el.foldGaze||(el.foldGaze=[]);
+    const figure=(agent,x,y,s,k=0)=>{
       const m=agent?sim(agent.id):null,sz=size*s;
+      const want=box?Fold.gaze(pointer.x-(box.left+x*box.width),pointer.y-(box.top+y*box.height)):{x:0,y:0,w:0},g=eased[k]||(eased[k]={x:0,y:0,w:0});
+      for(const q of ['x','y','w'])g[q]+=(want[q]-g[q])*.25;
       c.save();c.translate(x*size-sz/2,y*size-sz/2);
-      Fold.draw(c,sz,still||!m?2.1:m.t,el.closest('.island')||!m?REST:m.p,{...look(agent),details:{shadow:sz>=32}});
+      Fold.draw(c,sz,still||!m?2.1:m.t,el.closest('.island')||!m?REST:m.p,{...look(agent),look:g,details:{shadow:sz>=32}});
       c.restore();
     };
     if(el.dataset.foldGroup!==undefined){
       const members=(groupOf(el.dataset.foldGroup)?.members||[]).map(agentOf).filter(Boolean).slice(0,4);
-      for(const [k,[x,y,s]] of (SPOTS[members.length]||[]).entries())figure(members[k],x,y,s);
+      for(const [k,[x,y,s]] of (SPOTS[members.length]||[]).entries())figure(members[k],x,y,s,k);
     }else if(el.dataset.foldId!==undefined){
       const agent=agentOf(el.dataset.foldId);if(agent)figure(agent,.5,.5,1);
     }else figure({avatarShape:el.dataset.foldShape,avatarColor:el.dataset.foldColor},.5,.5,1);
   }
+  // Where the pointer is, for the sidebar figures' eyes; nowhere once it leaves the window.
+  let pointer=null;
+  document.addEventListener('pointermove',e=>{pointer={x:e.clientX,y:e.clientY};},{passive:true,capture:true});
+  document.documentElement.addEventListener('mouseleave',()=>{pointer=null;});
+  root.addEventListener?.('blur',()=>{pointer=null;});
   const shown=el=>el.isConnected&&el.getClientRects().length>0&&!el.closest('details:not([open])>:not(summary)');
   let raf=0,last=0;
   function frame(now){
