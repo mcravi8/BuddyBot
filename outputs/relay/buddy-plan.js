@@ -93,6 +93,9 @@
   const sinceOf=(task,run)=>(Array.isArray(run?.working)?run.working:[]).find(w=>w.agentId===task.assignee&&w.title===task.title)?.since||task.updatedAt;
 
   // One line that says what is happening, in plain words.
+  // What a stuck notice says, without the ask it ends with: “Chief is stuck on “…”. Say how to go on.” (since 27 Oct), or “The team is stuck
+  // on …: … Tell me how to proceed.” (before).
+  const stuckWords=t=>String(t||'').replace(/\s*(?:Tell me how to proceed|Say how to go on)\.?\s*$/,'').trim();
   function banner(plan,pulse,names,now=Date.now()){
     if(!plan)return '';
     const state=runState(plan),run=plan.run||{},stages=stagesOf(plan),total=stages.length,sup=nameOf(names,plan.supervisorId)||'Chief';
@@ -105,7 +108,7 @@
     }
     if(state==='needs_you'){const items=needsList(plan,names),n=Math.max(Number(run.needsYou)||0,items.length,1);return `Needs you (${n})${items[0]?': '+items[0]:''}`;}
     // The supervisor's background lane stopped on something: say so and why, never that the supervisor is at work on it.
-    if(state==='stuck'){const why=String(run.stuck||'').replace(/\s*Tell me how to proceed\.?\s*$/,'').trim();return why?(/^The team is stuck on /.test(why)?why.replace(/^The team is stuck on /,'Stuck on '):`Stuck — ${why}`):`Stuck — ${sup} can't move this forward by itself`;}
+    if(state==='stuck'){const why=stuckWords(run.stuck);return why?(/^[^“:]{1,60}? is stuck on /.test(why)?why.replace(/^[^“:]{1,60}? is stuck on /,'Stuck on '):`Stuck — ${why}`):`Stuck — ${sup} can't move this forward by itself`;}
     const planning=planningStage(plan);if(planning)return `${sup} is planning Stage ${planning.n}`;
     const tasks=allTasks(plan);
     if(state==='waiting_on_supervisor'){
@@ -237,8 +240,8 @@
       // One plain line, like any other notice: what the team is stuck on (without the stage's long title) and a way to tell Chief. The whole
       // reason shows on hover when the line cuts it.
       const titles=stagesOf(plan).flatMap(s=>[`Stage ${Number(s.n)} — ${s.title}`,...(Array.isArray(s.tasks)?s.tasks:[]).map(t=>t?.title)]).filter(Boolean).sort((a,b)=>b.length-a.length);
-      let why=text.replace(/\s*Tell me how to proceed\.?\s*$/,'');const on=titles.find(t=>why.startsWith(`The team is stuck on ${t}: `));
-      why=on?why.slice(`The team is stuck on ${on}: `.length):why.replace(/^The team is stuck on [^:]*:\s*/,'');
+      let why=stuckWords(text);const on=titles.find(t=>why.startsWith(`The team is stuck on ${t}: `));
+      why=on?why.slice(`The team is stuck on ${on}: `.length):why.replace(/^The team is stuck on [^:]*:\s*/,'').replace(/^[^“:]{1,60}? is stuck on (“[^”]*”)/,'$1');
       const {first,more}=firstLine(why,160);
       return {line:true,label:'Stuck',html:`<strong class="plan-stuck-mark">Stuck</strong><span${more?` title="${esc(why)}"`:''}> · ${esc(first)}</span> <button type="button" class="small-link" data-plan-answer="chat">Tell ${esc(message.whoName||'Chief')}</button>`};
     }

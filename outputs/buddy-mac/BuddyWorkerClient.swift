@@ -55,7 +55,7 @@ import AppKit
             "title": ["type": "string", "maxLength": 80], "goal": ["type": "string", "maxLength": 600],
             "acceptance": ["type": "array", "minItems": 1, "maxItems": 5, "items": ["type": "string", "maxLength": 200]]] as [String: Any]]
         let task: [String: Any] = ["type": "object", "additionalProperties": false, "required": ["stage", "key", "title", "assignee", "kind", "brief", "deliverable"], "properties": [
-            "stage": ["type": "integer", "minimum": 1, "maximum": 20], "key": ["type": "string", "maxLength": 40], "title": ["type": "string", "maxLength": 150],
+            "stage": ["type": "integer", "minimum": 1, "maximum": 20], "key": ["type": "string", "maxLength": 40], "title": ["type": "string", "maxLength": 150, "description": "A short plain ask that starts with a verb, as you would say it in the chat (“Draft the new caption wording”)."],
             "assignee": ["type": "string"], "kind": ["type": "string", "enum": ["research", "general", "coding"]], "brief": ["type": "string", "maxLength": 6000],
             "deliverable": ["type": "string", "maxLength": 300], "dependsOn": ["type": "array", "items": ["type": "string"]]] as [String: Any]]
         let properties: [String: Any] = [

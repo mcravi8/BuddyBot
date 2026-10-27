@@ -77,6 +77,7 @@ test('a plan whose supervisor lane stopped says Stuck and why, never that the su
  const html=P.stripHTML(stuck,pulse({}),names,{open:true,now:NOW});
  assert.match(html,/Stuck on Stage 5/);assert.doesNotMatch(html,/is checking/);
  assert.equal(P.banner(active([task('t1','done')],{state:'stuck'}),pulse({}),names,NOW),"Stuck — Chief can't move this forward by itself",'without a reason it still says stuck');
+assert.equal(P.banner(active([task('t1','done')],{state:'stuck',stuck:'Chief is stuck on “Export the DOC”. Say how to go on.'}),pulse({}),names,NOW),'Stuck on “Export the DOC”.','the newer wording reads the same way');
 });
 
 test('stage and task chips say where each piece of work stands',()=>{
@@ -250,6 +251,12 @@ test('plan notices read as short chat messages: a stage report in a line with th
  const stuck=P.noticeCard(stuckPlan,{id:'plan-notice-s1',planNotice:true,planId:'p1',noticeKind:'stuck',body:stuckText,whoName:'Chief'});
  assert.equal(stuck.line,true);assert.match(stuck.html,/^<strong class="plan-stuck-mark">Stuck<\/strong><span> · Chief tried to add tasks, but Buddy refused: At most 12 tasks can be added to one stage; stage 5 has 12\.<\/span> <button type="button" class="small-link" data-plan-answer="chat">Tell Chief<\/button>$/);
  assert.doesNotMatch(stuck.html,/S04a|Tell me how to proceed/);
+ // Since 27 Oct the notice names who is stuck and on what, and the reason goes to Chief: the line keeps what it is stuck on.
+ const named=P.noticeCard(stuckPlan,{id:'plan-notice-s2',planNotice:true,planId:'p1',noticeKind:'stuck',body:'Chief is stuck on “Export the DOC”. Say how to go on.',whoName:'Chief'});
+ assert.match(named.html,/<span> · “Export the DOC”\.<\/span> <button type="button" class="small-link" data-plan-answer="chat">Tell Chief<\/button>$/);
+ assert.doesNotMatch(named.html,/Say how to go on|is stuck on/);
+ const looped=P.noticeCard(stuckPlan,{id:'plan-notice-s3',planNotice:true,planId:'p1',noticeKind:'stuck',body:"Chief is stuck on “Export the DOC”: its last 3 decisions didn't move the work. Say how to go on.",whoName:'Chief'});
+ assert.match(looped.html,/<span> · “Export the DOC”: its last 3 decisions didn&#39;t move the work\.<\/span>|<span> · “Export the DOC”: its last 3 decisions didn't move the work\.<\/span>/);
  assert.equal(P.noticeCard(null,msg(holding.notices[0])),null,'a notice whose plan is not known stays a plain message');
  assert.equal(P.noticeCard(holding,{...msg(holding.notices[0]),noticeKind:'proposal'}),null);
 });
