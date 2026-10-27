@@ -59,10 +59,14 @@ test('a sidebar figure near the pointer looks at it, and one far away does not',
   // The drawing itself: at rest the same at any moment; a pointer close by moves the eyes; working moves the figure.
   const diffs=await page.evaluate(()=>{
    const shot=(t,p,look)=>{const c=document.createElement('canvas');c.width=c.height=100;const x=c.getContext('2d',{willReadFrequently:true});BuddyFold.draw(x,100,t,p,{shape:'hex',color:'#e07a2c',side:'right',look,details:{shadow:true}});return Array.from(x.getImageData(0,0,100,100).data);};
+   const posed=(t,p,look,pose)=>{const c=document.createElement('canvas');c.width=c.height=100;const x=c.getContext('2d',{willReadFrequently:true});BuddyFold.drawPosed(x,100,t,p,{shape:'hex',color:'#e07a2c',side:'right',look,details:{shadow:true}},pose);return Array.from(x.getImageData(0,0,100,100).data);};
    const diff=(a,b)=>a.filter((v,i)=>v!==b[i]).length,rest={thinking:0,talking:0,done:0},none={x:0,y:0,w:0},work={thinking:1,talking:0,done:0};
-   return {rest:diff(shot(1,rest,none),shot(13.7,rest,none)),pointer:diff(shot(1,rest,none),shot(1,rest,BuddyFold.gaze(30,0))),working:diff(shot(1,work,none),shot(1.6,work,none))};
+   return {rest:diff(shot(1,rest,none),shot(13.7,rest,none)),pointer:diff(shot(1,rest,none),shot(1,rest,BuddyFold.gaze(30,0))),working:diff(shot(1,work,none),shot(1.6,work,none)),
+     unposed:diff(shot(1,rest,none),posed(1,rest,none,{yaw:0,pitch:0})),turned:diff(shot(1,rest,none),posed(1,rest,none,{yaw:.4,pitch:0})),nodded:diff(shot(1,rest,none),posed(1,rest,none,{yaw:0,pitch:.25}))};
   });
   assert.equal(diffs.rest,0,'a resting figure is still');
   assert.ok(diffs.pointer>100&&diffs.working>100,`the pointer turns the eyes and work moves the figure: ${JSON.stringify(diffs)}`);
+  assert.equal(diffs.unposed,0,'a body that is not turned is drawn as it is');
+  assert.ok(diffs.turned>200&&diffs.nodded>200,`the body turns and nods (option B): ${JSON.stringify(diffs)}`);
  }finally{await context?.close();await rm(dir,{recursive:true,force:true});}
 });

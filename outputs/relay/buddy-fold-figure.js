@@ -198,7 +198,42 @@
     o.details = Object.assign({ depth: false, eyeshade: true, shadow: true, halftone: false, blush: false }, opts && opts.details);
     c.save(); paint(c, size, t, Object.assign({ thinking: 0, talking: 0, done: 0 }, p), o); c.restore();
   };
-  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, bob, eyes, gaze, SHAPES, COLORS, STATES };
+  // The body turned (yaw, about its upright axis) and nodded (pitch, about its level axis), in radians, drawn in perspective: the figure
+  // is drawn flat, then laid down one 1 px strip at a time, each scaled by how near it comes, so the near side grows and the far side
+  // shrinks and darkens a little (the person chose this on 27 Oct, proposal "Agents that turn", option B). Strips land between their edges'
+  // projections, rounded to whole pixels, so they meet exactly and never darken the soft shadows. Unturned, it is the plain drawing.
+  const scratch = new Map();
+  function pair(px) {
+    let s = scratch.get(px);
+    if (!s) { s = { flat: document.createElement('canvas'), mid: document.createElement('canvas') }; for (const c of [s.flat, s.mid]) { c.width = px; c.height = px; } if (scratch.size > 24) scratch.clear(); scratch.set(px, s); }
+    return s;
+  }
+  function drawPosed(c, size, t, p, opts, pose) {
+    const yaw = pose && pose.yaw || 0, pitch = pose && pose.pitch || 0;
+    if (Math.abs(yaw) < 0.002 && Math.abs(pitch) < 0.002) return draw(c, size, t, p, opts);
+    const M = c.getTransform(), d = Math.max(1, Math.hypot(M.a, M.b)), px = Math.ceil(size * d), { flat, mid } = pair(px);
+    const f = flat.getContext('2d'); f.setTransform(d, 0, 0, d, 0, 0); f.clearRect(0, 0, size, size); draw(f, size, t, p, opts);
+    const D = size * 2.6 * d, cx = px / 2;
+    let src = flat;
+    const sy = Math.sin(yaw), cyaw = Math.cos(yaw);
+    if (Math.abs(sy) > 0.002) {
+      const m = mid.getContext('2d'); m.setTransform(1, 0, 0, 1, 0, 0); m.clearRect(0, 0, px, px);
+      const kx = x => D / (D + (x - cx) * sy), ex = x => Math.round(cx + (x - cx) * cyaw * kx(x));
+      for (let x = 0; x < px; x++) { const X0 = ex(x), X1 = ex(x + 1); if (X1 <= X0) continue; const h = px * kx(x + 0.5); m.drawImage(flat, x, 0, 1, px, X0, (px - h) / 2, X1 - X0, h); }
+      m.globalCompositeOperation = 'source-atop';
+      const g = m.createLinearGradient(0, 0, px, 0), a = Math.min(0.22, Math.abs(sy) * 0.4);
+      g.addColorStop(sy > 0 ? 0 : 1, `rgba(0,0,0,${a})`); g.addColorStop(0.5, 'rgba(0,0,0,0)'); m.fillStyle = g; m.fillRect(0, 0, px, px);
+      m.globalCompositeOperation = 'source-over'; src = mid;
+    }
+    c.save(); c.scale(1 / d, 1 / d);
+    const sp = Math.sin(pitch), cp = Math.cos(pitch);
+    if (Math.abs(sp) > 0.002) {
+      const ky = y => D / (D - (y - cx) * sp), ey = y => Math.round(cx + (y - cx) * cp * ky(y));
+      for (let y = 0; y < px; y++) { const Y0 = ey(y), Y1 = ey(y + 1); if (Y1 <= Y0) continue; const w = px * ky(y + 0.5); c.drawImage(src, 0, y, px, 1, (px - w) / 2, Y0, w, Y1 - Y0); }
+    } else c.drawImage(src, 0, 0);
+    c.restore();
+  }
+  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, drawPosed, fold, bob, eyes, gaze, SHAPES, COLORS, STATES };
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.BuddyFold = api;
 })(typeof window !== 'undefined' ? window : globalThis);

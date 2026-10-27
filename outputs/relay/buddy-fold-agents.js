@@ -1,7 +1,8 @@
 /* Every agent is drawn as a fold figure (the person's design of 27 Oct, "switch current agents to new design, drop old design for now"): a
    flat shape in the agent's colour with one corner folded over and white eyes (buddy-fold-figure.js). buddy-figures.js keeps Buddy's logo and
    the sidebar's dot field. Each agent's and group's picture keeps its place (a canvas, or a slot in a sidebar row) under an id the dot painter
-   doesn't know, so it leaves them alone and this file paints them.
+   doesn't know, so it leaves them alone and this file paints them. In the sidebar, a figure near the pointer looks at it, and its body turns
+   and nods toward it too.
    The mood follows what the agent is doing, as buddy-figure-modes.js reads it: ready → idle, planning or working → thinking, writing a reply
    → talking, just finished → done (about two seconds, then idle). The figure in a chat's floating header is a still picture, as before. */
 (function(root){
@@ -86,7 +87,7 @@
   }
 
   // ---- painting -------------------------------------------------------------------------------------------------------------------------
-  const REST={thinking:0,talking:0,done:0};
+  const REST={thinking:0,talking:0,done:0},TURN=28*Math.PI/180,NOD=16*Math.PI/180;
   // A group: up to four of its members, side by side or in a square.
   const SPOTS={1:[[.5,.5,1]],2:[[.29,.5,.6],[.71,.5,.6]],3:[[.29,.29,.52],[.71,.29,.52],[.5,.73,.52]],4:[[.27,.27,.5],[.73,.27,.5],[.27,.73,.5],[.73,.73,.5]]};
   function paint(el){
@@ -102,7 +103,9 @@
       const want=box?Fold.gaze(pointer.x-(box.left+x*box.width),pointer.y-(box.top+y*box.height)):{x:0,y:0,w:0},g=eased[k]||(eased[k]={x:0,y:0,w:0});
       for(const q of ['x','y','w'])g[q]+=(want[q]-g[q])*.25;
       c.save();c.translate(x*size-sz/2,y*size-sz/2);
-      Fold.draw(c,sz,still||!m?2.1:m.t,el.closest('.island')||!m?REST:m.p,{...look(agent),look:g,details:{shadow:sz>=32}});
+      // The body follows the eyes: it turns and nods toward the pointer (up to 28° and 16°, proposal "Agents that turn", option B).
+      const pose={yaw:TURN*Math.max(-1,Math.min(1,g.x/.15))*g.w,pitch:-NOD*Math.max(-1,Math.min(1,g.y/.13))*g.w};
+      Fold.drawPosed(c,sz,still||!m?2.1:m.t,el.closest('.island')||!m?REST:m.p,{...look(agent),look:g,details:{shadow:sz>=32}},pose);
       c.restore();
     };
     if(el.dataset.foldGroup!==undefined){
