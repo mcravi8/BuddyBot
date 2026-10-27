@@ -16,6 +16,13 @@ test('the fold stays still while the agent rests, talks or is done, and moves on
   assert.ok(at({done:1},[0])[0]<at({},[0])[0],'done lays the fold almost flat');
 });
 
+test('a resting figure does not bob either (its peel looked as if it moved); a working one does',()=>{
+  const lifts=p=>times.map(t=>Fold.bob(t,{thinking:0,talking:0,done:0,...p}));
+  for(const p of [{},{talking:1},{done:1}])assert.ok(lifts(p).every(v=>v===0),`no bob: ${JSON.stringify(p)}`);
+  const working=lifts({thinking:1});
+  assert.ok(Math.max(...working)>.03&&Math.min(...working)<.01,`working: it lifts and settles (${working})`);
+});
+
 test('Buddy saves the round figure as "sphere": it is the circle',()=>{
   assert.equal(Fold.SHAPES.sphere,Fold.SHAPES.circle);
   for(const id of ['square','sphere','hex','pill','arch','diamond'])assert.ok(Fold.SHAPES[id],id);

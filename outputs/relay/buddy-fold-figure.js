@@ -58,6 +58,11 @@
     k = lerp(k, 0.4, p.talking);
     return lerp(k, 0.12, p.done);
   }
+  // How high the figure floats over its shadow (in head radii). It bobs only while the agent works: a resting figure bobbing made its
+  // peel look as if it moved (27 Oct), so at rest only the eyes blink and glance.
+  function bob(t, p) {
+    return (0.5 + 0.5 * Math.sin(t * 1.3)) * 0.06 * p.thinking;
+  }
   function body(c, u, t, p, o, col, size) {
     const S = SHAPES[o.shape] || SHAPES.hex, rw = u * 0.2, B = u * 4;
     const ang = S.ang[o.side === 'left' ? 1 : 0], nx = Math.cos(ang), ny = Math.sin(ang);
@@ -94,7 +99,7 @@
     const u = size / 2 * 0.84, col = inkOf(o.color);
     c.translate(size / 2, size / 2);
     if (!o.details.shadow) return body(c, u, t, p, o, col, size);
-    const lift = (0.5 + 0.5 * Math.sin(t * 1.3)) * 0.06 * u * (1 - 0.8 * p.done), k = lift / u;
+    const lift = bob(t, p) * u, k = lift / u;
     c.fillStyle = `rgba(20,20,20,${0.15 - k * 0.9})`;
     c.beginPath(); c.ellipse(0, u * 0.9, u * 0.5 * (1 - k * 1.6), u * 0.07 * (1 - k), 0, 0, Math.PI * 2); c.fill();
     c.translate(0, -u * 0.08 - lift); c.scale(0.88, 0.88);
@@ -147,7 +152,7 @@
     o.details = Object.assign({ shadow: true, halftone: false, blush: false }, opts && opts.details);
     c.save(); paint(c, size, t, Object.assign({ thinking: 0, talking: 0, done: 0 }, p), o); c.restore();
   };
-  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, SHAPES, COLORS, STATES };
+  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, bob, SHAPES, COLORS, STATES };
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.BuddyFold = api;
 })(typeof window !== 'undefined' ? window : globalThis);
