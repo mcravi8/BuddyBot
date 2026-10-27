@@ -12,7 +12,8 @@ test('a task waiting for a WRDS sign-in shows a Needs card that opens the agentâ
    render();BuddyActivity.acceptWorker(fixtureWorker);
   });
   await page.evaluate(()=>BuddyWorkerUI.refresh(false));
-  await page.getByRole('button',{name:/^Notifications:/}).click();await page.getByRole('tab',{name:/Needs you/}).waitFor();
+  // The bell lists what needs you in the sidebar (27 Oct, option C).
+  await page.getByRole('button',{name:/^Notifications:/}).click();
   const card=page.getByRole('button',{name:/WRDS needs your sign-in/});await card.waitFor();
   assert.match(await card.innerText(),/Sign in in chat/);
   await card.click();

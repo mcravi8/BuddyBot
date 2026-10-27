@@ -9,3 +9,27 @@
 /* Nothing needs the person, but finished work is unread: a dot, no number. */
 .activity-nav>[data-activity-count].only-finished{min-width:8px;width:8px;height:8px;padding:0;top:4px;right:3px}
 .team-chat-agent-message .bot-bubble{background:transparent;border:1px solid var(--line)}.team-chat-agent-message.is-sent-back .bot-bubble{border-color:var(--warn-line)}.team-chat-more summary{cursor:pointer;font-size:11px;color:var(--text2);margin-top:4px}
+
+/* Each chat row says its state in place of its last message, and the bell shows only what needs the person, in the sidebar (27 Oct, design
+   canvas "Buddy notifications and + menu", option C). */
+.chat-snippet.row-needs{color:var(--warn)}
+.chat-snippet.row-working{color:var(--text2)}
+.sidebar.needs-only .chat-list{display:none}
+.sidebar .icon-button.activity-nav.is-on,.sidebar .icon-button.activity-nav.is-on:hover{background:var(--ink);color:var(--on-ink)}
+.needs-filter{display:flex;flex-direction:column;gap:6px;padding:2px 8px 12px;min-height:0;overflow:auto}
+.sidebar.needs-only .needs-filter{flex:1}
+.needs-filter-head{display:flex;align-items:center;justify-content:space-between;padding:2px 8px 4px;font-size:12.5px;color:var(--text2)}
+.needs-filter-head strong{font-weight:600}
+.needs-filter .needs-entry{display:flex;grid-template-columns:none;gap:10px;align-items:flex-start;width:100%;margin:0;border:0;border-radius:14px;background:var(--soft);padding:10px;text-align:left;font:inherit;color:var(--text);cursor:pointer}
+.needs-filter .needs-entry:hover{background:var(--hover)}
+.needs-filter .needs-entry:focus-visible{outline:2px solid var(--text2);outline-offset:1px}
+.needs-figure{flex:none;display:grid;place-items:center}
+.needs-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
+.needs-copy strong{font-size:14px;font-weight:600;line-height:1.3}
+.needs-copy .activity-description{margin:0;font-size:13px;line-height:1.35;color:var(--text2)}
+.needs-copy .activity-note{font-size:12px;color:var(--text2)}
+.needs-action{align-self:flex-start;margin-top:6px;font-size:12px;font-weight:600;color:var(--on-ink);background:var(--ink);border-radius:999px;padding:4px 11px}
+.needs-empty{margin:4px 8px;font-size:13px;color:var(--text2)}
+.needs-filter .needs-all{align-self:flex-start;margin:4px 8px 0;font-size:12.5px;color:var(--text2)}
+.sidebar-compact .needs-filter-head,.sidebar-compact .needs-copy{display:none}
+.sidebar-compact .needs-filter .needs-entry{justify-content:center;background:transparent;padding:6px}
