@@ -26,6 +26,7 @@
 
   const hexRgb = h => { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
   const tint = (h, w) => `rgb(${hexRgb(h).map(v => Math.round(v + (255 - v) * w))})`;
+  const shade = (h, w) => `rgb(${hexRgb(h).map(v => Math.round(v * (1 - w)))})`;
   const alpha = (h, a) => `rgba(${hexRgb(h)},${a})`;
   const lerp = (a, b, k) => a + (b - a) * k;
   const inkOf = c => COLORS[c] || (typeof c === 'string' && c[0] === '#' ? c : COLORS.cobalt);
@@ -34,13 +35,19 @@
   const GL = [[0, 0], [0.12, -0.06], [0.12, -0.06], [-0.11, -0.04], [0, -0.13], [0, -0.13], [-0.12, 0.03], [0.08, -0.11], [0, 0], [0.13, 0.02], [-0.06, -0.12], [-0.06, -0.12]];
   const glance = t => { const D = 1.05, i = Math.floor(t / D), fr = Math.min(1, (t % D) / 0.2), e = fr * fr * (3 - 2 * fr), A = GL[(i + GL.length - 1) % GL.length], B = GL[i % GL.length]; return [lerp(A[0], B[0], e), lerp(A[1], B[1], e)]; };
 
-  function ringEyes(c, dx, y, u, sc, open, done, lx, ly, wide = 0.15, tall = 0.23) {
-    const w = wide * u * sc, hh = tall * u * sc * Math.max(0.1, open);
+  // The eyes; with eyeshade each has a shadow in the body's own colour, down and to the left (the person's design of 27 Oct).
+  function ringEyes(c, dx, y, u, sc, open, done, lx, ly, wide = 0.15, tall = 0.23, col = null, eyeshade = false) {
+    const w = wide * u * sc, hh = tall * u * sc * Math.max(0.1, open), under = col && eyeshade ? alpha(shade(col, 0.45), 0.42) : null;
     c.fillStyle = '#ffffff'; c.strokeStyle = '#ffffff';
     y += ly;
     for (const s of [-1, 1]) {
       const x = s * dx + lx;
-      if (done > 0.5) { c.lineWidth = 0.11 * u * sc; c.lineCap = 'round'; c.beginPath(); c.arc(x, y + 0.1 * u * sc, 0.14 * u * sc, Math.PI * 1.12, Math.PI * 1.88); c.stroke(); continue; }
+      if (done > 0.5) {
+        c.lineWidth = 0.11 * u * sc; c.lineCap = 'round';
+        if (under) { c.save(); c.shadowColor = 'transparent'; c.strokeStyle = under; c.beginPath(); c.arc(x - u * 0.035, y + 0.1 * u * sc + u * 0.035, 0.14 * u * sc, Math.PI * 1.12, Math.PI * 1.88); c.stroke(); c.restore(); }
+        c.beginPath(); c.arc(x, y + 0.1 * u * sc, 0.14 * u * sc, Math.PI * 1.12, Math.PI * 1.88); c.stroke(); continue;
+      }
+      if (under) { c.save(); c.shadowColor = 'transparent'; c.fillStyle = under; c.beginPath(); c.roundRect(x - w * 1.06 - u * 0.035, y - hh + u * 0.035, 2 * w * 1.06, 2 * hh, Math.min(w, hh) * 0.78); c.fill(); c.restore(); }
       c.beginPath(); c.roundRect(x - w, y - hh, 2 * w, 2 * hh, Math.min(w, hh) * 0.78); c.fill();
     }
   }
@@ -88,16 +95,33 @@
     const ang = S.ang[o.side === 'left' ? 1 : 0], nx = Math.cos(ang), ny = Math.sin(ang);
     const pts = S.pts.map(q => [q[0] * u, q[1] * u]);
     let hs = -1e9; for (const q of pts) hs = Math.max(hs, q[0] * nx + q[1] * ny); hs += rw / 2;
-    const d = hs - fold(t, p) * u;
+    const k = fold(t, p), d = hs - k * u, dep = o.details.depth, M = c.getTransform(), sx = Math.hypot(M.a, M.b);
+    const lin = (x0, y0, x1, y1, st) => { const g = c.createLinearGradient(x0, y0, x1, y1); st.forEach(q => g.addColorStop(q[0], q[1])); return g; };
+    const noShadow = () => { c.shadowColor = 'transparent'; c.shadowBlur = 0; c.shadowOffsetX = 0; c.shadowOffsetY = 0; };
     const path = new Path2D(); pts.forEach((q, i) => i ? path.lineTo(q[0], q[1]) : path.moveTo(q[0], q[1])); path.closePath();
     const paint = (fill, lw) => { c.fillStyle = fill; c.strokeStyle = fill; c.lineWidth = lw; c.lineJoin = 'round'; c.fill(path); c.stroke(path); };
     const half = beyond => { c.rotate(ang); c.beginPath(); if (beyond) c.rect(d, -B, B, 2 * B); else c.rect(-B, -B, B + d, 2 * B); c.rotate(-ang); c.clip(); };
     const reflect = () => { c.rotate(ang); c.translate(2 * d, 0); c.scale(-1, 1); c.rotate(-ang); };
-    // body with the corner cut off, then the flap's shadow, then the flap (the corner reflected across the crease)
-    c.save(); half(false); paint(col, rw);
-    c.save(); c.translate(-nx * u * 0.04, -ny * u * 0.04 + u * 0.025); reflect(); half(true); paint('rgba(0,0,0,.18)', rw); c.restore();
+    // The body's shadow in its own colour, down and to the left (further while it floats), then the body with the corner cut off, the flap's
+    // shadow, and the flap (the corner reflected across the crease). With depth: gradients, a highlight and soft shadows instead.
+    if (o.details.shadow) {
+      c.save(); c.translate(-u * 0.055, u * (0.055 + LIFT * 0.6)); half(false);
+      c.fillStyle = c.strokeStyle = alpha(shade(col, 0.45), 0.42); c.lineWidth = rw; c.lineJoin = 'round'; c.fill(path); c.stroke(path);
+      c.restore();
+    }
+    c.save(); half(false);
+    paint(dep ? lin(-u * 0.6, -u * 0.8, u * 0.6, u * 0.8, [[0, tint(col, 0.3)], [0.55, col], [1, shade(col, 0.3)]]) : col, rw);
+    if (dep) {
+      const hl = c.createRadialGradient(-u * 0.32, -u * 0.42, 0, -u * 0.32, -u * 0.42, u * 0.78);
+      hl.addColorStop(0, 'rgba(255,255,255,.36)'); hl.addColorStop(1, 'rgba(255,255,255,0)');
+      c.fillStyle = hl; c.fill(path);
+      c.fillStyle = lin(0, u * 0.2, 0, u * 0.95, [[0, 'rgba(0,0,0,0)'], [1, 'rgba(0,0,0,.16)']]); c.fill(path);
+    } else { c.save(); c.translate(-nx * u * 0.04, -ny * u * 0.04 + u * 0.025); reflect(); half(true); paint('rgba(0,0,0,.18)', rw); c.restore(); }
     c.restore();
-    c.save(); reflect(); half(true); paint(tint(col, 0.55), rw);
+    c.save(); reflect(); half(true);
+    if (dep) { c.shadowColor = 'rgba(0,0,0,.3)'; c.shadowBlur = u * 0.14 * sx; c.shadowOffsetX = -nx * u * 0.05 * sx; c.shadowOffsetY = (-ny * u * 0.05 + u * 0.05) * sx; }
+    paint(dep ? lin(nx * d, ny * d, nx * (d + k * u), ny * (d + k * u), [[0, tint(col, 0.36)], [1, tint(col, 0.8)]]) : tint(col, 0.55), rw);
+    noShadow();
     if (o.details.halftone && size >= 32) {
       c.clip(path); c.fillStyle = alpha(col, 0.5);
       const sp = u * 0.075, r = u * 0.022;
@@ -107,7 +131,9 @@
     const sc = S.rs || 1, ey = u * (S.ey - 0.03) - u * 0.05 * p.talking;
     // opts.look: where something near catches the eyes ({x, y} in head radii, w how strongly), over where they would look anyway.
     const e = eyes(t, p), lk = o.look || { x: 0, y: 0, w: 0 }, w = Math.max(0, Math.min(1, lk.w || 0));
-    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open, p.done, lerp(e.x, lk.x || 0, w) * u, lerp(e.y, lk.y || 0, w) * u, e.wide, e.tall);
+    if (dep) { c.shadowColor = 'rgba(0,0,0,.24)'; c.shadowBlur = u * 0.05 * sx; c.shadowOffsetY = u * 0.035 * sx; }
+    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open, p.done, lerp(e.x, lk.x || 0, w) * u, lerp(e.y, lk.y || 0, w) * u, e.wide, e.tall, col, o.details.eyeshade);
+    noShadow();
     mouth(c, u * (S.ey + 0.3), u, t, p);
     if (o.details.blush && p.done > 0.01) {
       c.fillStyle = `rgba(255,255,255,${0.3 * p.done})`;
@@ -118,13 +144,13 @@
   function paint(c, size, t, p, o) {
     const u = size / 2 * 0.84, col = inkOf(o.color);
     c.translate(size / 2, size / 2);
-    if (!o.details.shadow) return body(c, u, t, p, o, col, size);
-    const lift = bob(t, p) * u, k = lift / u;
-    c.fillStyle = `rgba(20,20,20,${0.15 - k * 0.9})`;
-    c.beginPath(); c.ellipse(0, u * 0.9, u * 0.5 * (1 - k * 1.6), u * 0.07 * (1 - k), 0, 0, Math.PI * 2); c.fill();
+    if (!o.details.shadow) { LIFT = 0; return body(c, u, t, p, o, col, size); }
+    // No shadow on the floor (the person's design of 27 Oct): the body's own shadow drops further while it floats.
+    const lift = bob(t, p) * u; LIFT = lift / u;
     c.translate(0, -u * 0.08 - lift); c.scale(0.88, 0.88);
     body(c, u, t, p, o, col, size);
   }
+  let LIFT = 0;
 
   const live = new Set();
   const reduce = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : { matches: false };
@@ -139,7 +165,7 @@
     constructor(canvas, opts) {
       this.canvas = canvas;
       this.o = Object.assign({ shape: 'hex', side: 'right', color: 'cobalt', state: 'idle', speed: 1, size: 0 }, opts);
-      this.o.details = Object.assign({ shadow: true, halftone: false, blush: false }, opts && opts.details);
+      this.o.details = Object.assign({ depth: false, eyeshade: true, shadow: true, halftone: false, blush: false }, opts && opts.details);
       this.p = { thinking: 0, talking: 0, done: 0 };
       this.p[this.o.state] = 1;
       this.t = Math.random() * 20;
@@ -169,7 +195,7 @@
   // Buddy paints its own canvases with this (buddy-fold-agents.js), several figures to a canvas for a group.
   const draw = (c, size, t, p, opts) => {
     const o = Object.assign({ shape: 'hex', side: 'right', color: 'cobalt' }, opts);
-    o.details = Object.assign({ shadow: true, halftone: false, blush: false }, opts && opts.details);
+    o.details = Object.assign({ depth: false, eyeshade: true, shadow: true, halftone: false, blush: false }, opts && opts.details);
     c.save(); paint(c, size, t, Object.assign({ thinking: 0, talking: 0, done: 0 }, p), o); c.restore();
   };
   const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, bob, eyes, gaze, SHAPES, COLORS, STATES };
