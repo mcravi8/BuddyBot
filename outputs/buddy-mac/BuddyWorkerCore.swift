@@ -619,7 +619,7 @@ struct BuddyAttempt {
             let rows = try actionStates(of: jobs[i]["id"] as? String ?? "")
             let reviews = Self.settled(jobs[i]["reviews"] as? [[String: Any]] ?? [], rows: rows, pending: "expired")
             jobs[i]["reviews"] = reviews
-            let unsure = reviews.filter { $0["status"] as? String == "uncertain" }
+            let unsure = reviews.filter { $0["status"] as? String == "uncertain" && !Self.checkedByTeam($0) }
             jobs[i]["status"] = "interrupted"
             jobs[i]["stopCause"] = "worker.restart"
             if unsure.isEmpty {
@@ -1182,6 +1182,14 @@ struct BuddyAttempt {
 
     // MARK: what needs you
 
+    /// Whether an action whose result wasn't confirmed can be checked by the team itself: a coding command Buddy read as working inside the
+    /// project (routine, project scripts, or one the supervisor read), whose effects are the project's own files and receipts. One that could
+    /// send data out, sign in or change the Mac stays the person's to check. On 25 Oct an approved Word export whose session ended early came
+    /// to the user as "check whether it went through", and kept the task from going on after a restart.
+    static func checkedByTeam(_ review: [String: Any]) -> Bool {
+        guard review["kind"] as? String == "coding", let kind = (review["assessment"] as? [String: Any])?["kind"] as? String else { return false }
+        return kind != "sensitive"
+    }
     /// `audience` is who has to act: "user" (the person) or "supervisor" (the agent the task names as its supervisor).
     struct DecisionSpec { let id: String, kind: String, title: String, question: String, label: String, payload: [String: Any]; var audience = "user" }
     /// The blockers a task's state implies right now, each with the identity that makes it the same blocker next time. One sign-in problem is one
@@ -1195,6 +1203,9 @@ struct BuddyAttempt {
         var out: [DecisionSpec] = []
         for review in job["reviews"] as? [[String: Any]] ?? [] {
             guard let reviewID = review["id"] as? String else { continue }
+            // A request still marked waiting on a task that has ended can't be answered any more (its run is gone): nothing to ask (23 Oct: a
+            // RunPod sign-in from a finished task stayed in Needs for days).
+            if review["status"] as? String == "pending", terminal.contains(status) { continue }
             let tool = (review["tool"] as? [String: Any])?["name"] as? String ?? "an action", auth = review["kind"] as? String == "authentication"
             switch review["status"] as? String ?? "" {
             case "pending" where review["kind"] as? String == "account":
@@ -1232,6 +1243,9 @@ struct BuddyAttempt {
                 if auth, let signin = review["signinId"] as? String { payload["signinId"] = signin }
                 out.append(DecisionSpec(id: "review:" + reviewID, kind: auth ? "signin" : "review", title: auth ? (site.map { "Sign in to \($0)" } ?? "Sign-in needs your choice") : check ? "Check the work: \(title)" : "Review: \(tool)",
                                         question: auth ? "Choose how to sign in to \(review["origin"] as? String ?? "this site") in the chat: type your password there, or open Chrome." : check ? (ask.isEmpty ? "Look at the work and say whether to continue." : ask) : "Allow this exact operation?" + Self.screened(review), label: auth ? "Open chat" : check ? "Check work" : "Review", payload: payload))
+            case "uncertain" where Self.checkedByTeam(review):
+                // A project command whose result wasn't confirmed: the agent checks its files and receipts itself when the work goes on.
+                break
             case "uncertain":
                 out.append(DecisionSpec(id: "action:" + reviewID + ":unconfirmed", kind: "unconfirmed", title: "Check whether “\(tool)” went through",
                                         question: "Buddy stopped before it could confirm this. Look at the site or service, then say whether it went through.", label: "Check action", payload: ["taskId": id, "reviewId": reviewID]))
@@ -1328,6 +1342,19 @@ struct BuddyAttempt {
         }
     }
     /// Brings every live task's blockers up to date: once at start (tasks that were already waiting get their entry) and after any change.
+    /// Clears what no longer needs the person: a notice (information only) after three days, and a question or notice about a task that has
+    /// ended, once it is a day old. A question about the work itself (a change to an agent's instructions, say) stays until it is answered.
+    /// Needs held items from four days before, about work long finished (25 Oct).
+    func tidyDecisions(now: Date = Date()) throws {
+        let day = Self.stamp(now.addingTimeInterval(-86400)), threeDays = Self.stamp(now.addingTimeInterval(-3 * 86400))
+        try db.run("UPDATE decisions SET status = 'resolved', resolution = 'expired', resolved_at = ? WHERE status = 'open' AND kind = 'notice' AND created_at < ?", [.text(Self.stamp(now)), .text(threeDays)])
+        for row in try db.rows("SELECT id, payload FROM decisions WHERE status = 'open' AND kind IN ('escalation', 'notice') AND created_at < ?", [.text(day)]) {
+            let payload = (try? BuddyOperationsDB.decode(row[1].string ?? "{}")) ?? [:]
+            guard let task = payload["taskId"] as? String, !task.isEmpty, let job = jobs.first(where: { $0["id"] as? String == task }),
+                  Self.terminal.contains(job["status"] as? String ?? "") || job["status"] as? String == "failed" else { continue }
+            try db.run("UPDATE decisions SET status = 'resolved', resolution = 'task_ended', resolved_at = ? WHERE id = ? AND status = 'open'", [.text(Self.stamp(now)), .text(row[0].string ?? "")])
+        }
+    }
     private func reconcileDecisions() throws {
         try db.transaction { for job in jobs { try Self.syncDecisions(job, in: db) } }
     }

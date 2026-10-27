@@ -68,6 +68,12 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
         CREATE TABLE IF NOT EXISTS plan_notices(id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('authorized','stage_report','escalation','stuck','proposal')),
           text TEXT NOT NULL, refs TEXT NOT NULL DEFAULT '{}', chat INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','answered','closed')), created_at TEXT NOT NULL)
         """,
+        // What a teammate wrote to its Chief (`buddy_team` message), and the Chief's answer: the Chief's lane takes each open one as an item.
+        """
+        CREATE TABLE IF NOT EXISTS team_messages(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, plan_id TEXT NOT NULL DEFAULT '', group_id TEXT NOT NULL DEFAULT '',
+          from_agent TEXT NOT NULL, to_agent TEXT NOT NULL, lead TEXT NOT NULL, text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 1500), job_id TEXT NOT NULL DEFAULT '',
+          reply TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','answered')), created_at TEXT NOT NULL, answered_at TEXT NOT NULL DEFAULT '')
+        """,
         """
         CREATE TRIGGER IF NOT EXISTS plan_task_dispatch_guard BEFORE UPDATE OF status ON plan_tasks WHEN NEW.status='dispatched' AND OLD.status<>'dispatched' BEGIN
           SELECT RAISE(ABORT,'plan task is outside the authorized stages') WHERE NOT EXISTS (SELECT 1 FROM plan_stages s JOIN plan_scopes sc ON sc.plan_id=s.plan_id AND sc.status='active' WHERE s.id=NEW.stage_id AND s.ordinal<=sc.through_ordinal);
@@ -1098,6 +1104,9 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
         return id
     }
     /// Closes the "stuck" notices raised after these supervisor runs, once what they were about moves again.
+    /// Whether a plan has an open "stuck" notice, and closes them all.
+    func hasStuckNotice(planId: String) throws -> Bool { !(try db.rows("SELECT 1 FROM plan_notices WHERE plan_id = ? AND kind = 'stuck' AND status = 'open' LIMIT 1", [.text(planId)])).isEmpty }
+    func closeStuckNotices(planId: String) throws { try db.run("UPDATE plan_notices SET status = 'closed' WHERE plan_id = ? AND kind = 'stuck' AND status = 'open'", [.text(planId)]) }
     /// Closes the open "stuck" notices about any of these supervisor items.
     func closeStuckNotices(itemKeys: [String]) throws {
         for key in itemKeys { try db.run("UPDATE plan_notices SET status = 'closed' WHERE kind = 'stuck' AND status = 'open' AND EXISTS (SELECT 1 FROM json_each(json_extract(refs, '$.itemKeys')) WHERE value = ?)", [.text(key)]) }
@@ -1177,6 +1186,54 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
     func setSupervisor(planId: String, to lead: String) throws -> Bool {
         guard !lead.isEmpty else { return false }
         return try db.run("UPDATE plans SET supervisor_id = ?, updated_at = ? WHERE id = ? AND supervisor_id <> ? AND status IN ('draft', 'active', 'holding')", [.text(lead), .text(Self.stamp()), .text(planId), .text(lead)]) == 1
+    }
+
+    // MARK: teammates' messages to their Chief
+
+    /// The most messages one teammate may have waiting for its Chief at once: past it, it waits for answers instead of writing more.
+    static let maxOpenMessages = 5
+    /// A teammate's message to its Chief (`lead`), about a plan or about no plan. The same words still waiting are not added twice.
+    /// Returns the message's id and whether it is new.
+    func postMessage(workspace: String, planId: String, groupId: String, from: String, to: String, lead: String, text: String, jobId: String) throws -> (id: String, fresh: Bool) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workspace.isEmpty, !from.isEmpty, !to.isEmpty, !lead.isEmpty, from != lead, !text.isEmpty else { throw Self.invalid("A message needs who it is from, its Chief and its words.") }
+        guard text.count <= 1500 else { throw Self.invalid("A message is at most 1,500 characters. Say what you need in short; details can follow in your result.") }
+        return try db.transaction {
+            if let same = try db.rows("SELECT id FROM team_messages WHERE from_agent = ? AND lead = ? AND text = ? AND status = 'open'", [.text(from), .text(lead), .text(text)]).first?.first?.string { return (same, false) }
+            let waiting = Int(try db.rows("SELECT COUNT(*) FROM team_messages WHERE from_agent = ? AND lead = ? AND status = 'open'", [.text(from), .text(lead)]).first?.first?.int ?? 0)
+            guard waiting < Self.maxOpenMessages else { throw Self.conflict("\(Self.maxOpenMessages) of your messages still wait for an answer. Carry on with what you can; the answers come back to you.") }
+            let id = UUID().uuidString
+            try db.run("INSERT INTO team_messages(id, workspace, plan_id, group_id, from_agent, to_agent, lead, text, job_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       [.text(id), .text(workspace), .text(planId), .text(groupId), .text(from), .text(to), .text(lead), .text(text), .text(jobId), .text(Self.stamp())])
+            return (id, true)
+        }
+    }
+    /// The messages still waiting for an answer, oldest first.
+    func openMessages(workspace: String) throws -> [[String: Any]] {
+        try db.rows("SELECT id, plan_id, group_id, from_agent, to_agent, lead, text, job_id, created_at FROM team_messages WHERE workspace = ? AND status = 'open' ORDER BY rowid", [.text(workspace)]).map { r in
+            ["id": Self.s(r, 0), "planId": Self.s(r, 1), "groupId": Self.s(r, 2), "from": Self.s(r, 3), "to": Self.s(r, 4), "lead": Self.s(r, 5), "text": Self.s(r, 6), "jobId": Self.s(r, 7), "at": Self.s(r, 8)]
+        }
+    }
+    /// The Chief answers a message still waiting. Returns the message (who wrote it, and from which task), or nil when it no longer waits.
+    func answerMessage(id: String, reply: String) throws -> [String: Any]? {
+        let reply = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else { throw Self.invalid("An answer needs its words.") }
+        return try db.transaction {
+            guard let r = try db.rows("SELECT from_agent, job_id, text, plan_id FROM team_messages WHERE id = ? AND status = 'open'", [.text(id)]).first else { return nil }
+            try db.run("UPDATE team_messages SET status = 'answered', reply = ?, answered_at = ? WHERE id = ? AND status = 'open'", [.text(String(reply.prefix(4000))), .text(Self.stamp()), .text(id)])
+            return ["from": Self.s(r, 0), "jobId": Self.s(r, 1), "text": Self.s(r, 2), "planId": Self.s(r, 3)]
+        }
+    }
+    /// The messages and answers as Agent messages and the group chat show them: the teammate's message to the agent it wrote to, and the
+    /// Chief's answer back.
+    func messageExchanges(workspace: String, limit: Int = 200) throws -> [[String: Any]] {
+        try db.rows("SELECT id, group_id, from_agent, to_agent, lead, text, reply, created_at, answered_at FROM team_messages WHERE workspace = ? ORDER BY rowid DESC LIMIT ?",
+                    [.text(workspace), .int(Int64(max(0, limit)))]).reversed().map { r in
+            let answered = Self.s(r, 8)
+            return ["id": "message:" + Self.s(r, 0), "kind": "message", "fromAgentId": Self.s(r, 2), "toAgentId": Self.s(r, 3), "title": "", "status": answered.isEmpty ? "queued" : "completed",
+                    "question": Self.s(r, 5), "body": Self.s(r, 6), "detail": "", "error": "", "groupId": Self.s(r, 1),
+                    "createdAt": Self.s(r, 7), "startedAt": Self.s(r, 7), "finishedAt": answered.isEmpty ? Self.s(r, 7) : answered]
+        }
     }
     /// Each plan task that has been handed out, with what the supervisor wrote for it and the group it belongs to: the group chat shows it as the
     /// supervisor's message to the teammate.

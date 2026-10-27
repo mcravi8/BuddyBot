@@ -394,6 +394,20 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         require(try await decisionsFor(generalID).first?["audience"] as? String == "supervisor", "and its open question is the supervisor's")
         print("PASS: a question an agent may not decide goes to its supervisor (coding and research tasks), and a sign-in it cannot do goes to the person")
 
+        // 3b. 26 Oct: Inbox could not tell Chief something, because only a supervisor may ask for a check-in. Any agent writes to its Chief with
+        // buddy_team message, and Agent messages shows it; the Chief's own message to a teammate goes straight into the teammate's current work.
+        let toLead = try await raw(["operation": "team", "actorId": vera, "arguments": ["action": "message", "text": "The 2015 data has a gap in March; I am filling it from the archive."]])
+        require(toLead["sent"] as? Bool == true && toLead["to"] as? String == lead && toLead["alreadyWaiting"] as? Bool == false, "a teammate's message goes to the team's Chief: \(toLead)")
+        let shownTo = try await raw(["operation": "team", "arguments": ["action": "status"]])
+        require(((shownTo["agentMessages"] as? [String: Any])?[vera] as? [String: Any])?["count"] as? Int == 1, "Agent messages shows it: \(shownTo["agentMessages"] ?? "none")")
+        let toForge = try await raw(["operation": "team", "actorId": lead, "arguments": ["action": "message", "agentId": forge, "text": "Use the 2015 data."]])
+        var reachedForge = false
+        for id in [askID, signinID] where (try await taskAs(forge, id)["updates"] as? [String] ?? []).contains("[From Lead, your supervisor] Use the 2015 data.") { reachedForge = true }
+        require(toForge["sent"] as? Bool == true && reachedForge, "the Chief's message reaches the teammate's current work: \(toForge)")
+        let nobody = try await raw(["operation": "team", "actorId": vera, "arguments": ["action": "message", "agentId": vera, "text": "Me again."]])
+        require(nobody["sent"] == nil && (nobody["error"] as? String ?? "").contains("That is you"), "writing to yourself is refused with a reason: \(nobody)")
+        print("PASS: any agent writes to its Chief with buddy_team message, and the Chief's message reaches a teammate's current work")
+
         // 4. Who may act on whose task: the supervisor reads and continues a teammate's technically stopped task; a teammate who neither supervises
         // nor manages it may not; and nobody but the owner continues a task that waits for an answer.
         let stuckID = try await startAs(forge, "STALL_FIXTURE: the supervisor continues this", "stuck")

@@ -37,6 +37,8 @@ import Foundation
         var key: String? = "fixture-key"
         /// The command reviews the lane answered through the worker's hook: (task, review, approved, supervisor, name, reason).
         var answered: [(String, String, Bool, String, String, String)] = []
+        /// The notes the lane gave a task's agent through the worker's hook: (task, note).
+        var told: [(String, String)] = []
         init(root: URL, store: BuddyWorkerStore, plans: BuddyPlanStore, lane: BuddySupervisorLane) { self.root = root; self.store = store; self.plans = plans; self.lane = lane }
         var worker: URL { root.appendingPathComponent("Worker") }
         var supervisorFolder: URL { worker.appendingPathComponent("Supervisor") }
@@ -53,7 +55,8 @@ import Foundation
         var holder: World?
         let hooks = BuddySupervisorLane.Hooks(stopTask: { id, cause in holder?.stopped.append((id, cause)); _ = try? holder?.store.update(id, ["status": "cancelled", "stopCause": cause]) },
                                               taskFiles: { id in ["/fixture/\(id)/baseline.csv"] },
-                                              answerReview: { task, review, accept, lead, name, reason in holder?.answered.append((task, review, accept, lead, name, reason)) })
+                                              answerReview: { task, review, accept, lead, name, reason in holder?.answered.append((task, review, accept, lead, name, reason)) },
+                                              tell: { task, note in holder?.told.append((task, note)) })
         let lane = BuddySupervisorLane(support: root, store: store, plans: plans,
                                        makeClaude: { BuddyWorkerProcess(resource: URL(fileURLWithPath: CommandLine.arguments[1]), runtime: URL(fileURLWithPath: CommandLine.arguments[2])) },
                                        makeGPT: { ConversationService(support: root, executable: URL(fileURLWithPath: CommandLine.arguments[3])) },
@@ -365,7 +368,7 @@ import Foundation
         require(calls(hold).count == 2 && notYet.isEmpty, "two runs that only hold are not yet stuck")
         await tick(hold)
         let stuck = try notices(hold, "stuck")
-        require(calls(hold).count == 3 && stuck.count == 1 && stuck[0]["text"] as? String == "The team is stuck on Rerun the pipeline: Waiting to see more. Tell me how to proceed." && stuck[0]["chat"] as? Bool == true, "after three presentations with no effect, one stuck notice: \(stuck)")
+        require(calls(hold).count == 3 && stuck.count == 1 && stuck[0]["text"] as? String == "Chief is stuck on “Rerun the pipeline”. Say how to go on." && (stuck[0]["refs"] as? [String: Any])?["reason"] as? String == "Waiting to see more." && stuck[0]["chat"] as? Bool == true, "after three presentations with no effect, one stuck notice: \(stuck)")
         await tick(hold); await tick(hold)
         let still = try notices(hold, "stuck")
         require(calls(hold).count == 3 && still.count == 1, "a stuck item is not presented again and the notice is not repeated")
@@ -423,7 +426,7 @@ import Foundation
         try mode(thrice, "refuse")
         await tick(thrice); await tick(thrice); await tick(thrice)
         let refusedStuck = try notices(thrice, "stuck")
-        require(refusedStuck.count == 1 && refusedStuck.first?["text"] as? String == "The team is stuck on Rerun the pipeline: Chief tried to send a result back, but Buddy refused: Give the rework a precise instruction. Tell me how to proceed.", "a stuck notice after refusals says what was refused: \(refusedStuck)")
+        require(refusedStuck.count == 1 && refusedStuck.first?["text"] as? String == "Chief is stuck on “Rerun the pipeline”. Say how to go on." && (refusedStuck.first?["refs"] as? [String: Any])?["reason"] as? String == "Chief tried to send a result back, but Buddy refused: Give the rework a precise instruction.", "a stuck notice after refusals says what was refused: \(refusedStuck)")
         print("PASS: a refused action is recorded on its item with the reason, kept across a restart and shown in the next briefing until an action takes effect; a stuck notice after refusals names the refusal")
 
         // 8. A run that never starts (the user's 17:25 failure) is not a presentation: nothing goes stuck, the lane keeps retrying, and after 30 minutes of
@@ -969,8 +972,8 @@ import Foundation
         }
         for _ in 0..<6 { await tick(looping); try refusingStep(looping) }
         require(calls(looping).count == 3, "Chief is asked three times, and not again once nothing follows its decisions: \(calls(looping).map { $0["items"] ?? "" })")
-        let stuck20 = try notices(looping, "stuck"), stuckText = stuck20.first?["text"] as? String ?? ""
-        require(stuck20.count == 1 && stuckText.contains("Chief decided on “Rerun the pipeline” 3 times") && stuckText.contains("Forge can't start this task right now") && stuck20.first?["chat"] as? Bool == true,
+        let stuck20 = try notices(looping, "stuck"), stuckText = ((stuck20.first?["refs"] as? [String: Any])?["reason"] as? String ?? "")
+        require(stuck20.count == 1 && (stuck20.first?["text"] as? String ?? "") == "Chief is stuck on “Rerun the pipeline”: its last 3 decisions didn't move the work. Say how to go on." && stuckText.contains("Chief decided on it 3 times") && stuckText.contains("Forge can't start this task right now") && stuck20.first?["chat"] as? Bool == true,
                 "the user gets one notice that says what kept happening: \(stuck20)")
         require(try planTask(looping, "t1")["status"] as? String == "blocked" && looping.stopped.isEmpty && jobs(looping, "t1").count == 1, "the task itself is left as it was, waiting")
         // Something happens to the task's work (here the user starts it again, and that run is cancelled too): Chief is asked again.
@@ -1071,5 +1074,48 @@ import Foundation
         updatedX.lane.reopenRefusedAfterUpdate(raw23, supervisor: chiefLeadX, build: "build-2")
         require(try itemState(updatedX, refused23).state == "open", "the next update does")
         print("PASS: after Buddy is updated, an item stuck because Buddy refused the supervisor's action is looked at once more and its stuck notice closes")
+
+        // 24. 25 Oct: the user allowed a macOS prompt and told Chief, but the export stayed stuck until Buddy was next updated. The user writing in
+        // the plan's chat reopens what is stuck, with their words, closes the stuck notice, and counts as their latest decision.
+        let wrote = try world(base, "wrote")
+        try propose(wrote)
+        let raw24 = try BuddyOperationsDB(directory: wrote.worker, existing: true), at24 = ISO8601DateFormatter().string(from: Date())
+        let quietDecisions = try raw24.rows("SELECT COUNT(*) FROM plan_decisions WHERE kind = 'user_answer'").first?.first?.int ?? -1
+        wrote.lane.userWrote("thanks", workspace: w, planIds: [wrote.planID])
+        require(try raw24.rows("SELECT COUNT(*) FROM plan_decisions WHERE kind = 'user_answer'").first?.first?.int == quietDecisions, "with nothing stuck, a message changes nothing")
+        try raw24.run("INSERT INTO supervisor_items(key, workspace, presented, state, last_run, updated_at, refusal) VALUES('result:stuck-export:1', ?, 3, 'stuck', 'run-z', ?, 'refused')", [.text(w), .text(at24)])
+        _ = try wrote.plans.addNotice(planId: wrote.planID, kind: "stuck", text: "The team is stuck on the export.", chat: true, refs: ["itemKeys": ["result:stuck-export:1"]])
+        wrote.lane.userWrote("I allowed the macOS access prompt; have Forge rerun the export.", workspace: w, planIds: [wrote.planID])
+        let open24 = try itemState(wrote, "result:stuck-export:1"), note24 = try raw24.rows("SELECT note FROM supervisor_items WHERE key = 'result:stuck-export:1'").first?.first?.string ?? ""
+        let said24 = try raw24.rows("SELECT choice FROM plan_decisions WHERE kind = 'user_answer' AND decided_by = 'user' ORDER BY rowid DESC LIMIT 1").first?.first?.string ?? ""
+        let closed24 = try notices(wrote, "stuck").allSatisfy { $0["status"] as? String == "closed" }
+        require(open24.state == "open" && open24.presented == 0 && note24.contains("I allowed the macOS access prompt") && said24.contains("rerun the export") && closed24,
+                "the user's message reopens the stuck work with their words, closes the notice and is their latest decision: \(open24) \(said24)")
+        print("PASS: the user writing in a stuck plan's chat reopens the stuck work with their words, closes the stuck notice and counts as their latest decision")
+
+        // 25. 26 Oct: Inbox could not reach Chief (“I don't have permission to request a check-in from them”). Any agent may write to its Chief:
+        // the message is an item in that Chief's lane, the answer goes back to the task it was written from, and the group chat shows both.
+        let note = try world(base, "note")
+        try propose(note)
+        _ = try step(note)
+        let noteJob = jobs(note, "t1").first?["id"] as? String ?? "", ask25 = "The macOS prompt blocks the Word export; can I take the PDF route instead?"
+        let posted25 = try note.plans.postMessage(workspace: w, planId: note.planID, groupId: group, from: forge, to: chief, lead: chief, text: ask25, jobId: noteJob)
+        let again25 = try note.plans.postMessage(workspace: w, planId: note.planID, groupId: group, from: forge, to: chief, lead: chief, text: ask25, jobId: noteJob)
+        require(posted25.fresh && !again25.fresh && again25.id == posted25.id, "the same words still waiting are not posted twice")
+        await tick(note)
+        let seen25 = calls(note).last ?? [:]
+        require((seen25["kinds"] as? [String] ?? []).contains("message") && (seen25["messages"] as? [String] ?? []).contains(ask25) && seen25["messageRule"] as? Bool == true,
+                "Chief's lane gets the message as an item, with its words and how to handle it: \(seen25)")
+        require(note.told.contains { $0.0 == noteJob && $0.1.hasPrefix("[Answer from Chief, your supervisor] Yes, take the PDF route") }, "Chief's answer goes back to the task Forge wrote from: \(note.told)")
+        require(try note.plans.openMessages(workspace: w).isEmpty, "the answered message no longer waits")
+        let shown25 = try note.plans.messageExchanges(workspace: w), grouped25 = BuddyTeamMonitorStore.groupMessages(shown25)[group] ?? []
+        require(grouped25.count == 2 && grouped25[0]["fromAgentId"] as? String == forge && grouped25[0]["body"] as? String == ask25
+                && grouped25[1]["fromAgentId"] as? String == chief && (grouped25[1]["body"] as? String ?? "").hasPrefix("Yes, take the PDF route"),
+                "the group chat shows Forge's message, then Chief's answer: \(grouped25)")
+        for n in 0..<BuddyPlanStore.maxOpenMessages { _ = try note.plans.postMessage(workspace: w, planId: "", groupId: "", from: vera, to: chief, lead: chief, text: "Note \(n)", jobId: "") }
+        var capped25 = false
+        do { _ = try note.plans.postMessage(workspace: w, planId: "", groupId: "", from: vera, to: chief, lead: chief, text: "One more", jobId: "") } catch { capped25 = true }
+        require(capped25, "past five waiting messages a teammate waits for answers instead of writing more")
+        print("PASS: any agent can message its Chief: the message is an item in Chief's lane, the answer goes back to the agent's task, and the group chat shows both")
     }
 }

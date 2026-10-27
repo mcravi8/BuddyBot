@@ -55,7 +55,7 @@ import Darwin
     private var stopping: [String: (status: String, cause: String, reason: String?, keepProgress: Bool, extra: [String: Any])] = [:]
     /// The tick's own checks never overlap: a check that is waiting for a stop to finish is not started again by the next timer fire.
     private var ticking = false
-    private var lastLimitPass = Date.distantPast
+    private var lastLimitPass = Date.distantPast, lastTidy = Date.distantPast
     /// How long a review may hold a run's slot while work it holds up is queued, before the waiting task is set aside (internal: tests shorten it).
     static var reviewParkAfter: TimeInterval = 600
     private let executableOverride: URL?
@@ -104,7 +104,7 @@ import Darwin
             // A worker that has just started has no live holders: whatever the last one held is free.
             _ = try store.breakAllLeases()
             monitor=try BuddyTeamMonitor(support:support,makeClaude:makeCoding,makeGPT:{ConversationService(support:self.support,executable:self.executableOverride)},keyReader:keyReader)
-            monitor.planConversations={[weak self] in (self?.planExchanges() ?? []) + (self?.planHandoffs() ?? [])}
+            monitor.planConversations={[weak self] in (self?.planExchanges() ?? []) + (self?.planHandoffs() ?? []) + (self?.teamMessages() ?? [])}
             supervisor = makeLane(fixed: nil)
             try listen()
             // Programs a coding session left running before this worker started are told to the task that carries that work on.
@@ -147,7 +147,8 @@ import Darwin
                                              try self.supervisorAnswer(id, review: review, accept: accept, supervisor: lead, name: name, reason: reason) },
                                          forwardReview: { [weak self] id, review, lead, name, note in
                                              guard let self else { throw BuddyWorkerFailure(message: "Worker stopped.") }
-                                             try self.supervisorForward(id, review: review, supervisor: lead, name: name, note: note) }),
+                                             try self.supervisorForward(id, review: review, supervisor: lead, name: name, note: note) },
+                                         tell: { [weak self] id, note in self?.tell(note, job: id) }),
                             fixed: fixed)
     }
     func applicationWillTerminate(_ notification: Notification) {
@@ -325,12 +326,21 @@ import Darwin
         let operation = request["operation"] as? String ?? "status"
         if operation=="team" {
             let args=request["arguments"] as? [String:Any] ?? [:],actor=request["actorId"] as? String,state=try state()
+            if args["action"] as? String=="message" {return try teamMessage(args,actor:actor,job:nil,state:state)}
             var reply=try monitor.handle(args,state:state,jobs:store.jobs,actor:actor,authorizedText:request["authorizedText"] as? String ?? "")
             // The supervisor and managers also see the team plans they look after.
             if let actor,(args["action"] as? String ?? "status")=="status",let overseen=overseenPlans(actor,state:state,workspace:current) {reply["plans"]=overseen.map(Self.agentPlan);reply=Self.fitForAgent(reply)}
             return reply
         }
         if operation=="plan" {return try await planOperation(request,workspace:current)}
+        // The user wrote in a chat: what is stuck in that chat's plans is looked at again with their words (`BuddySupervisorLane.userWrote`).
+        if operation=="userWrote" {
+            let chat=request["chat"] as? String ?? "",text=request["text"] as? String ?? ""
+            guard !chat.isEmpty,!text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {return ["noted":false]}
+            let ids=((try? plans.leadership(workspace:current)) ?? []).filter{$0.group==chat || $0.supervisor==chat}.map(\.plan)
+            supervisor.userWrote(text,workspace:current,planIds:ids)
+            return ["noted":true]
+        }
         if operation=="resolve_waiting" {return try await resolveWaiting(request,workspace:current)}
         if operation=="computer" {
             let agentID=request["agentId"] as? String ?? "",a=try agent(agentID,workspace:current),args=request["arguments"] as? [String:Any] ?? [:],action=args["action"] as? String ?? ""
@@ -2212,6 +2222,8 @@ import Darwin
         // A file step whose file the user saved where it was asked for continues without their Done.
         if !space.isEmpty { await resumeArrivedFiles(workspace:space,now:now) }
         if now.timeIntervalSince(lastLimitPass)>=BuddyRecovery.limitPassInterval {lastLimitPass=now;resumeWithinLimit(workspace:space)}
+        // What no longer needs the person leaves Needs by itself: soon after the worker starts, then hourly.
+        if now.timeIntervalSince(lastTidy)>=3600 {lastTidy=now;try? store.tidyDecisions(now:now)}
         // The stage loop, every two seconds: it dispatches each ready task of the authorized stage exactly once, as an ordinary task.
         if !space.isEmpty, now.timeIntervalSince(lastLoopAt) >= 2 { lastLoopAt = now; runStageLoop(workspace: space, state: current) }
         noteIdle(workspace: space, now: now)
@@ -3357,6 +3369,53 @@ import Darwin
         }
         return out
     }
+    /// Teammates' messages to their Chief and its answers, as Agent messages and the group chat show them.
+    private func teamMessages() -> [[String: Any]] {
+        guard UUID(uuidString: workspace) != nil else { return [] }
+        return (try? plans.messageExchanges(workspace: workspace)) ?? []
+    }
+    /// An agent writes to its Chief (`buddy_team` message), from a chat or from a task: any agent may, about anything. It goes to the Chief
+    /// of the plan it is working on, else of a project it is in, else the team's; one addressed to another teammate goes to that teammate's
+    /// Chief, who answers or acts on it. The Chief's lane takes it as an item, and its answer comes back to the task the agent wrote from.
+    private func teamMessage(_ args: [String: Any], actor: String?, job: [String: Any]?, state: [String: Any]) throws -> [String: Any] {
+        guard let actor, !actor.isEmpty else { throw BuddyWorkerFailure(message: "Only an agent sends a team message; the user writes in the chat.") }
+        let names = Self.names(state), text = (args["text"] as? String ?? args["question"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard names[actor] != nil else { throw BuddyWorkerFailure(message: "This agent is no longer in the workspace.") }
+        guard !text.isEmpty else { throw BuddyWorkerFailure(message: "Say what you want to tell or ask in text.") }
+        let groups = state["groups"] as? [[String: Any]] ?? [], live = (try? plans.leadership(workspace: workspace)) ?? []
+        func plan(of agent: String) -> (plan: String, group: String)? {
+            if agent == actor, let id = job?["planId"] as? String, !id.isEmpty, let p = live.first(where: { $0.plan == id }) { return (p.plan, p.group) }
+            return live.first { p in (groups.first { $0["id"] as? String == p.group }?["members"] as? [String] ?? []).contains(agent) }.map { ($0.plan, $0.group) }
+        }
+        // Who it is for: the agent named, else the writer's own Chief.
+        var to = (args["agentId"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        if !to.isEmpty, names[to] == nil { throw BuddyWorkerFailure(message: "There is no teammate with that agent id; buddy_team status lists them.") }
+        let mine = plan(of: actor), chiefs = supervisors(state)
+        func chiefOf(_ agent: String) -> String? {
+            if let p = plan(of: agent), let lead = live.first(where: { $0.plan == p.plan })?.supervisor, !lead.isEmpty { return lead }
+            if let g = groups.first(where: { ($0["members"] as? [String] ?? []).contains(agent) }), let lead = chief(ofGroup: g["id"] as? String ?? "", state: state) { return lead }
+            return teamSupervisor(state)
+        }
+        if to.isEmpty { to = chiefOf(actor) ?? "" }
+        guard !to.isEmpty else { throw BuddyWorkerFailure(message: "This team has no Chief yet, so there is nobody to write to. Say it in your reply instead.") }
+        guard to != actor else { throw BuddyWorkerFailure(message: "That is you. Write to your Chief or to a teammate.") }
+        let lead = chiefs.contains(to) ? to : chiefOf(to) ?? ""
+        guard !lead.isEmpty else { throw BuddyWorkerFailure(message: "This team has no Chief yet, so there is nobody to write to. Say it in your reply instead.") }
+        // A Chief writing to a teammate it leads: the note reaches the teammate's running work directly.
+        if lead == actor {
+            let open = store.jobs.filter { $0["agentId"] as? String == to && !BuddyWorkerStore.terminal.contains($0["status"] as? String ?? "") }
+            guard let target = open.first(where: { mine == nil || $0["planId"] as? String == mine?.plan }) ?? open.first, let id = target["id"] as? String else {
+                throw BuddyWorkerFailure(message: "\(names[to] ?? "That teammate") has no work under way to pass this to. Give it work through the team plan (buddy_plan).")
+            }
+            tell("[From \(names[actor] ?? "your Chief"), your supervisor] " + String(text.prefix(1500)), job: id)
+            return ["sent": true, "to": to, "toName": names[to] ?? "", "delivered": "to its current task “\(target["title"] as? String ?? "")”"]
+        }
+        let about = mine.flatMap { p in live.first { $0.plan == p.plan && $0.supervisor == lead } }
+        let words = to == lead ? text : "For \(names[to] ?? to): " + text
+        let posted = try plans.postMessage(workspace: workspace, planId: about?.plan ?? "", groupId: about?.group ?? "", from: actor, to: lead, lead: lead, text: String(words.prefix(1500)), jobId: job?["id"] as? String ?? "")
+        return ["sent": true, "to": lead, "toName": names[lead] ?? "", "messageId": posted.id, "alreadyWaiting": !posted.fresh,
+                "next": "\(names[lead] ?? "Your Chief") answers in the team's background run" + (job == nil ? "; the answer shows in the group chat and in Agent messages." : "; the answer comes back to this task.") + " Carry on meanwhile; don't wait or ask again."]
+    }
     /// A result's message to the user: the text before its first line of three dashes (the details for the team, and Buddy's receipts, follow it).
     static func message(of result: String) -> String {
         let text = result.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3409,7 +3468,10 @@ import Darwin
         let id = job["id"] as! String
         guard let run = live(id), permitted(job) else { throw BuddyWorkerFailure(message: "This background task stopped or its access was removed.") }
         guard privateTask != id else{throw BuddyWorkerFailure(message:"Buddy’s Chrome window is open for the user for this task. End this reply and wait for them.")}
-        if name=="buddy_team" {return try monitor.handle(args,state:state(),jobs:store.jobs,actor:job["agentId"] as? String)}
+        if name=="buddy_team" {
+            if args["action"] as? String=="message" {return try teamMessage(args,actor:job["agentId"] as? String,job:job,state:state())}
+            return try monitor.handle(args,state:state(),jobs:store.jobs,actor:job["agentId"] as? String)
+        }
         if ["buddy_service_tools","buddy_service_read"].contains(name) {
             guard let service=run.service,try providerSettings.current(job["workspace"] as! String).chatgptEnabled else {throw BuddyWorkerFailure(message:"Reconnect ChatGPT to use connected read tools.")}
             return try await service.directService(name,args:args,workspace:job["workspace"] as! String,keys:[(job["workspace"] as! String)+":"+(job["agentId"] as! String)],runID:run.runID) { let live=self.isCurrent(run) && self.permitted(job) && (try? self.providerSettings.current(job["workspace"] as! String).chatgptEnabled)==true; if live {run.lastActivityAt=Date()}; return live }
@@ -3733,6 +3795,10 @@ import Darwin
         let who = review["answeredBy"] as? String == "supervisor" ? review["answeredByName"] as? String ?? "Your supervisor" : "The user"
         let command = (((review["tool"] as? [String: Any])?["arguments"] as? [String: Any])?["command"] as? String ?? "").replacingOccurrences(of: "\n", with: " ")
         return "[Buddy] \(who) declined your command" + (command.isEmpty ? "" : " `\(command.count > 200 ? String(command.prefix(199)) + "…" : command)`") + ": \(reason) Take that into account and carry on; don't ask for the same command again."
+    }
+    /// A note for a task's agent: into the coding turn that is running (as the person typing while it works would), else kept for its next attempt.
+    private func tell(_ note: String, job id: String) {
+        if let codex = runs[id]?.codex { codex.steer(note) } else { keepNote(note, job: id) }
     }
     /// A note for the agent that could not reach its running turn: kept with the task's updates, so its next attempt reads it.
     private func keepNote(_ note: String, job id: String) {

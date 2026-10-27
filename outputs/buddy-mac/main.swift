@@ -285,6 +285,10 @@ import AppKit
             return (through, "")
         } catch { return (nil, error.localizedDescription) }
     }
+    /// Tells the worker the user wrote in a chat (a group, or an agent directly), so work stuck in that chat's plans is looked at again.
+    func noteUserWrote(workspace:String,chat:String,text:String) {
+        Task { _ = try? await BuddyWorkerClient.call(support:self.supportURL,payload:["operation":"userWrote","workspace":workspace,"chat":chat,"text":String(text.prefix(4000))]) }
+    }
     /// The worker's task records, read-only, as a chat turn reads them.
     private func liveJobs() -> [[String: Any]] { ((try? BuddyOperationsDB.snapshot(directory: supportURL.appendingPathComponent("Worker"))) ?? nil)?.tasks ?? [] }
     /// What one agent's chat turn is told about the plans it works in, the work running now and the waits solved lately (the same block in its
@@ -486,6 +490,7 @@ import AppKit
                         throw BuddyFailure(message:"\(names) \(notReady.count>1 ? "haven't":"hasn't") finished setup. Choose “Use their instructions” above the message box, or answer their first question in their own chat.")
                     }
                     request.fileScope = try conversations.projectFiles.scope(request.workspace)
+                    noteUserWrote(workspace:request.workspace,chat:request.groupId,text:request.text)
                     guard let stages else { replyHandler(try teamwork.send(request), nil); return }
                     let ready=request
                     Task {
@@ -522,6 +527,7 @@ import AppKit
                 if let currentAgent {routed["agent"]=["name":currentAgent["name"] ?? "Buddy","role":currentAgent["role"] ?? "","description":currentAgent["description"] ?? ""]}
                 // "get stage 1 done" to the plan's supervisor is recorded by the app itself; the turn then hears that it was (or why not).
                 let state=try workspaceState(), plans=BuddyPlanStore.readOnlySummary(support:supportURL,workspace:context.workspace)
+                noteUserWrote(workspace:context.workspace,chat:agent,text:options.authorizedUserText)
                 let stages=BuddyPlanChat.intercept(scope:BuddyPlanIntent.scope(options.authorizedUserText).map{($0.through,$0.remainder)},plans:plans,chat:agent,agent:agent,isGroup:false)
                 guard let stages else { options.instructions+=planInstructions(plans:plans,agent:agent,state:state,note:"",direct:true); replyHandler(try ai.send(routed, options: options), nil); return }
                 let base=options, message=routed

@@ -53,6 +53,8 @@ for line in sys.stdin:
         'lastsData': (brief.get('authorization') or {}).get('lasts', '') if isinstance(brief.get('authorization'), dict) else '',
         'userAnswers': [i.get('userAnswer', '') for i in items],
         'pathField': 'path' in schema['properties']['actions']['items']['properties'],
+        'messages': [(i.get('message') or {}).get('text', '') for i in items],
+        'messageRule': 'answer a message item (a teammate wrote to you)' in c['instructions'],
     }
     with (folder / 'fixture-calls.jsonl').open('a') as f:
         f.write(json.dumps(call) + '\n')
@@ -124,6 +126,8 @@ for line in sys.stdin:
             done = ['task:' + t['id'] for t in stage.get('tasks', []) if t.get('status') == 'done']
             actions.append({'item': key, 'do': 'stage_done', 'reason': 'Every criterion is met.', 'evidence': done,
                             'text': 'Stage 1 is done: the baseline reproduces and Vera signed off. Files: baseline.csv. Decisions I made: Table 2 is the baseline. Open: none.'})
+        elif kind == 'message':
+            actions.append({'item': key, 'do': 'answer', 'reason': 'A clear ask with another way to the same result.', 'text': 'Yes, take the PDF route; the export stays as checked.'})
         elif kind == 'command_review':
             actions.append({'item': key, 'do': 'approve_command', 'reason': 'A public download the stage needs, saved inside the project.'})
         else:

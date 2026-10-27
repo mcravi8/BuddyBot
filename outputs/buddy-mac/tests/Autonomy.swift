@@ -20,7 +20,7 @@ import Foundation
         let own = BuddyAutonomy.supervision(agent: "chief", supervisor: "chief", name: "Chief")
         require(own.hasPrefix("You supervise this team.") && own.contains("Decide everything outside the user list yourself and record why") && own.contains("A teammate writing \"needs the user's OK\" does not make something a user item."), "the supervisor is told it decides for the team: \(own)")
         let other = BuddyAutonomy.supervision(agent: "forge", supervisor: "chief", name: "Chief")
-        require(other == "Your supervisor is Chief. Questions you cannot decide go to them (buddy_request_decision in background work; by name in chat). Never end a reply or result with a question to the user unless it is on the user list.", "a teammate is told to ask its supervisor by name: \(other)")
+        require(other == "Your supervisor is Chief. Questions you cannot decide go to them (buddy_request_decision in background work); to tell or ask them anything else, from a chat or a task, use buddy_team message. Never end a reply or result with a question to the user unless it is on the user list.", "a teammate is told to ask its supervisor by name: \(other)")
         require(BuddyAutonomy.chatGuidance(agent: "forge", supervisor: "chief", name: "Chief").hasPrefix(policy + "\n" + other + "\nTime: ") && BuddyAutonomy.chatGuidance(agent: "chief", supervisor: "chief", name: "Chief").hasPrefix(policy + "\n" + own + "\nTime: "), "chat guidance is the policy, the agent's own supervision line, then the person's clock")
 
         // 3. Finding the supervisor: the team-monitor policy first, then the manager of a group the agent is in.
