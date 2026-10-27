@@ -50,10 +50,11 @@
     c.globalAlpha = 1;
   }
 
-  // How far the corner is folded over (in head radii): still while the agent rests (the person asked on 27 Oct for the peel to move only
-  // while the agent works), lifting and lowering while it works, held while it talks, almost flat once it is done.
+  // How far the corner is folded over (in head radii): at its lowest and still while the agent rests, as when it has just finished (the
+  // person asked on 27 Oct for the peel to rest low and move only while the agent works), lifting and lowering while it works, held up while
+  // it talks. Resting keeps the eyes open; only a job just done shows the happy eyes.
   function fold(t, p) {
-    let k = 0.4;
+    let k = 0.12;
     k = lerp(k, 0.22 + 0.34 * (0.5 + 0.5 * Math.sin(t * 2.2)), p.thinking);
     k = lerp(k, 0.4, p.talking);
     return lerp(k, 0.12, p.done);

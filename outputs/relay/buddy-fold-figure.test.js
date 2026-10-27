@@ -13,7 +13,8 @@ test('the fold stays still while the agent rests, talks or is done, and moves on
   }
   const working=at({thinking:1},times);
   assert.ok(Math.max(...working)-Math.min(...working)>.1,`working: the fold lifts and lowers (${working})`);
-  assert.ok(at({done:1},[0])[0]<at({},[0])[0],'done lays the fold almost flat');
+  assert.equal(at({},[0])[0],at({done:1},[0])[0],'resting, the fold lies as low as when a job is done');
+  assert.ok(at({},[0])[0]<Math.min(...working)&&at({},[0])[0]<at({talking:1},[0])[0],'that is its lowest: working and talking raise it');
 });
 
 test('a resting figure does not bob either (its peel looked as if it moved); a working one does',()=>{
