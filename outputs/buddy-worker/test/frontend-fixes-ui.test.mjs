@@ -29,7 +29,7 @@ test('sidebar hover, repaint, search, Back to chat, IME Enter, reset and escapin
   // Keyboard focus on the search box is clearly visible, not a hairline border change.
   await page.locator('#chat-search').focus();await page.keyboard.press('Shift+Tab');await page.keyboard.press('Tab');
   const ring=await page.evaluate(()=>{const box=document.querySelector('.chat-search'),cs=getComputedStyle(box);return {focused:document.activeElement?.id,style:cs.outlineStyle,width:cs.outlineWidth,color:cs.outlineColor};});
-  assert.equal(ring.focused,'chat-search');assert.equal(ring.style,'solid');assert.equal(ring.width,'2px');assert.equal(ring.color,'rgb(102, 101, 95)','the ring uses --text2, which is well above the 3:1 needed');
+  assert.equal(ring.focused,'chat-search');assert.equal(ring.style,'solid');assert.equal(ring.width,'2px');assert.equal(ring.color,'rgb(95, 95, 95)','the ring uses --text2 (#5f5f5f on the white light mode), which is well above the 3:1 needed');
   // Back to chat from another view works even when the remembered chat no longer exists.
   await page.evaluate(()=>{ui.lastChat='morgan';ui.view={kind:'tasks'};render();});await page.locator('[data-action=return-chat]').click();await page.waitForTimeout(200);
   assert.equal(await page.locator('#message-input').count(),1,'a chat with a composer is shown, not a blank pane');

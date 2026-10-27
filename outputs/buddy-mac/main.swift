@@ -11,7 +11,7 @@ import AppKit
     private static let appearanceKey = "BuddyAppearance"
     // The page colour of the light and dark themes, so the window never flashes the wrong one while the page loads.
     private static let pageBackground = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 18 / 255, green: 18 / 255, blue: 17 / 255, alpha: 1) : NSColor(srgbRed: 251 / 255, green: 250 / 255, blue: 248 / 255, alpha: 1)
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 18 / 255, green: 18 / 255, blue: 17 / 255, alpha: 1) : NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
     }
     /// WKWebView keeps the colour it was given as it resolved at that moment, so resolve it again for the current appearance.
     private static func resolvedPageBackground() -> NSColor {
