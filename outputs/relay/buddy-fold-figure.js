@@ -16,6 +16,8 @@
     circle:  { name: 'Circle',  ang: [-Q, -3 * Q], ey: 0.14, ex: 0.23, pts: poly(72, 0.74, 0) },
     hex:     { name: 'Hex',     ang: [-Math.PI / 6, -5 * Math.PI / 6], ey: 0.14, ex: 0.22, pts: poly(6, 0.78, -Math.PI / 2) },
     pill:    { name: 'Pill',    ang: [-Q, -3 * Q], ey: 0.18, ex: 0.18, rs: 0.82, pts: [...arcP(0, -0.26, 0.5, Math.PI, 2 * Math.PI, 24), ...arcP(0, 0.26, 0.5, 0, Math.PI, 24)] },
+    // A pill on its side, wide and low like Buddy's logo (asked for on 27 Oct).
+    capsule: { name: 'Sideways pill', ang: [-Q, -3 * Q], ey: 0.1, ex: 0.22, rs: 0.8, pts: [...arcP(0.3, 0, 0.46, -Math.PI / 2, Math.PI / 2, 24), ...arcP(-0.3, 0, 0.46, Math.PI / 2, 3 * Math.PI / 2, 24)] },
     arch:    { name: 'Arch',    ang: [-Q, -3 * Q], ey: 0.2, ex: 0.21, pts: [...arcP(0, -0.06, 0.62, Math.PI, 2 * Math.PI, 30), [0.62, 0.7], [-0.62, 0.7]] },
     diamond: { name: 'Diamond', ang: [0, Math.PI], ey: 0.1, ex: 0.2, pts: [[0, -0.84], [0.84, 0], [0, 0.84], [-0.84, 0]] }
   };

@@ -128,9 +128,9 @@ test('removed grey migrates to the new blue while existing light blue and green 
   assert.equal(Team.colorOptions.find(c=>c.id==='mint').name,'Green');
 });
 
-test('the six fold shapes replace the 3D shapes, and saved or suggested old names migrate',()=>{
-  assert.deepEqual(Team.shapeOptions.map(s=>s.id),['square','sphere','hex','pill','arch','diamond']);
-  assert.deepEqual(Team.shapeOptions.map(s=>s.name),['Square','Circle','Hex','Pill','Arch','Diamond']);
+test('the seven fold shapes replace the 3D shapes, and saved or suggested old names migrate',()=>{
+  assert.deepEqual(Team.shapeOptions.map(s=>s.id),['square','sphere','hex','pill','capsule','arch','diamond']);
+  assert.deepEqual(Team.shapeOptions.map(s=>s.name),['Square','Circle','Hex','Pill','Sideways pill','Arch','Diamond']);
   assert.deepEqual(Team.legacyShape,{star:'diamond',pebble:'sphere',cube:'hex',clover:'pill'});
   for(const [old,now] of Object.entries(Team.legacyShape))assert.equal(Team.appearance({avatarShape:old,avatarColor:'mint'}).avatarShape,now);
   assert.equal(Team.appearance({avatarShape:'hexagon'}).avatarShape,'diamond','an unknown shape falls back instead of breaking the avatar');

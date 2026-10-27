@@ -1,12 +1,13 @@
 /* Frontend configuration and preview proposals. Live suggestions and approval are enforced by Buddy’s native bridge. */
 'use strict';
 const RelayTeam = (() => {
-  // The fold figures' six shapes (buddy-fold-figure.js). "sphere" is the circle's saved id from before them, so saved agents keep their shape.
+  // The fold figures' seven shapes (buddy-fold-figure.js). "sphere" is the circle's saved id from before them, so saved agents keep their shape.
   const shapeOptions = [
     {id:'square',name:'Square'},
     {id:'sphere',name:'Circle'},
     {id:'hex',name:'Hex'},
     {id:'pill',name:'Pill'},
+    {id:'capsule',name:'Sideways pill'},
     {id:'arch',name:'Arch'},
     {id:'diamond',name:'Diamond'}
   ];

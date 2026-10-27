@@ -34,7 +34,7 @@ test('a resting figure keeps its eyes open and looking ahead; working, they look
 
 test('Buddy saves the round figure as "sphere": it is the circle',()=>{
   assert.equal(Fold.SHAPES.sphere,Fold.SHAPES.circle);
-  for(const id of ['square','sphere','hex','pill','arch','diamond'])assert.ok(Fold.SHAPES[id],id);
+  for(const id of ['square','sphere','hex','pill','capsule','arch','diamond'])assert.ok(Fold.SHAPES[id],id);
 });
 
 test('the eyes turn toward a pointer close by, most when it is near, and ignore one far away',()=>{
