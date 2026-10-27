@@ -50,16 +50,20 @@
     c.globalAlpha = 1;
   }
 
+  // How far the corner is folded over (in head radii): still while the agent rests (the person asked on 27 Oct for the peel to move only
+  // while the agent works), lifting and lowering while it works, held while it talks, almost flat once it is done.
+  function fold(t, p) {
+    let k = 0.4;
+    k = lerp(k, 0.22 + 0.34 * (0.5 + 0.5 * Math.sin(t * 2.2)), p.thinking);
+    k = lerp(k, 0.4, p.talking);
+    return lerp(k, 0.12, p.done);
+  }
   function body(c, u, t, p, o, col, size) {
     const S = SHAPES[o.shape] || SHAPES.hex, rw = u * 0.2, B = u * 4;
     const ang = S.ang[o.side === 'left' ? 1 : 0], nx = Math.cos(ang), ny = Math.sin(ang);
     const pts = S.pts.map(q => [q[0] * u, q[1] * u]);
     let hs = -1e9; for (const q of pts) hs = Math.max(hs, q[0] * nx + q[1] * ny); hs += rw / 2;
-    let k = 0.4 * (1 + 0.04 * Math.sin(t * 1.4));
-    k = lerp(k, 0.22 + 0.34 * (0.5 + 0.5 * Math.sin(t * 2.2)), p.thinking);
-    k = lerp(k, 0.4, p.talking);
-    k = lerp(k, 0.12, p.done);
-    const d = hs - k * u;
+    const d = hs - fold(t, p) * u;
     const path = new Path2D(); pts.forEach((q, i) => i ? path.lineTo(q[0], q[1]) : path.moveTo(q[0], q[1])); path.closePath();
     const paint = (fill, lw) => { c.fillStyle = fill; c.strokeStyle = fill; c.lineWidth = lw; c.lineJoin = 'round'; c.fill(path); c.stroke(path); };
     const half = beyond => { c.rotate(ang); c.beginPath(); if (beyond) c.rect(d, -B, B, 2 * B); else c.rect(-B, -B, B + d, 2 * B); c.rotate(-ang); c.clip(); };
@@ -143,7 +147,7 @@
     o.details = Object.assign({ shadow: true, halftone: false, blush: false }, opts && opts.details);
     c.save(); paint(c, size, t, Object.assign({ thinking: 0, talking: 0, done: 0 }, p), o); c.restore();
   };
-  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, SHAPES, COLORS, STATES };
+  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, fold, SHAPES, COLORS, STATES };
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.BuddyFold = api;
 })(typeof window !== 'undefined' ? window : globalThis);
