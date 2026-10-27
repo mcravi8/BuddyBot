@@ -26,7 +26,7 @@ test('a resting figure does not bob either (its peel looked as if it moved); a w
 
 test('a resting figure keeps its eyes open and looking ahead; working, they look around and blink',()=>{
   const many=Array.from({length:200},(_,i)=>i*.05),look=p=>many.map(t=>Fold.eyes(t,{thinking:0,talking:0,done:0,...p}));
-  for(const e of [...look({}),...look({done:1})])assert.deepEqual(e,{x:0,y:0,open:1});
+  for(const e of [...look({}),...look({done:1})])assert.deepEqual({x:e.x,y:e.y,open:e.open},{x:0,y:0,open:1});
   const working=look({thinking:1});
   assert.ok(working.some(e=>e.x!==0||e.y!==0),'working: the eyes look around');
   assert.ok(working.some(e=>e.open<.5),'working: it blinks');
@@ -46,4 +46,12 @@ test('the eyes turn toward a pointer close by, most when it is near, and ignore 
   assert.ok(up.y<0&&up.x===0,'a pointer above: the eyes look up');
   assert.ok(near.w>less.w,'closer holds the eyes more');
   assert.equal(Fold.gaze(0,0).x,0,'a pointer right on the figure: the eyes stay centred');
+});
+
+test('the eyes are narrower at rest and open to full size while the agent works or talks',()=>{
+  const at=p=>Fold.eyes(1,{thinking:0,talking:0,done:0,...p});
+  const rest=at({}),working=at({thinking:1}),talking=at({talking:1});
+  assert.ok(rest.wide<working.wide&&rest.wide<talking.wide,`narrower at rest: ${rest.wide} vs ${working.wide}`);
+  assert.ok(rest.wide/rest.tall<.55&&working.wide/working.tall>.6,'resting eyes are tall and narrow; active ones rounder');
+  assert.equal(at({done:1}).wide,rest.wide,'a job just done keeps the resting size');
 });

@@ -34,8 +34,8 @@
   const GL = [[0, 0], [0.12, -0.06], [0.12, -0.06], [-0.11, -0.04], [0, -0.13], [0, -0.13], [-0.12, 0.03], [0.08, -0.11], [0, 0], [0.13, 0.02], [-0.06, -0.12], [-0.06, -0.12]];
   const glance = t => { const D = 1.05, i = Math.floor(t / D), fr = Math.min(1, (t % D) / 0.2), e = fr * fr * (3 - 2 * fr), A = GL[(i + GL.length - 1) % GL.length], B = GL[i % GL.length]; return [lerp(A[0], B[0], e), lerp(A[1], B[1], e)]; };
 
-  function ringEyes(c, dx, y, u, sc, open, done, lx, ly) {
-    const w = 0.15 * u * sc, hh = 0.23 * u * sc * Math.max(0.1, open);
+  function ringEyes(c, dx, y, u, sc, open, done, lx, ly, wide = 0.15, tall = 0.23) {
+    const w = wide * u * sc, hh = tall * u * sc * Math.max(0.1, open);
     c.fillStyle = '#ffffff'; c.strokeStyle = '#ffffff';
     y += ly;
     for (const s of [-1, 1]) {
@@ -70,7 +70,9 @@
   // still read as an agent at work (27 Oct). Working, they look around and blink; talking, they blink.
   function eyes(t, p) {
     const k = p.thinking, g = glance(t * (1 + 0.15 * k)), x = k ? g[0] * k : 0, y = k ? g[1] * k : 0, squint = y < -0.09 ? 0.85 : 1;
-    return { x, y, open: lerp(1, blinkAt(t), Math.min(1, p.thinking + p.talking)) * lerp(1, squint, p.thinking) };
+    // Narrower at rest, opening to full size while the agent works or talks (27 Oct: big eyes for its animations, narrower when resting).
+    const busy = Math.min(1, p.thinking + p.talking);
+    return { x, y, open: lerp(1, blinkAt(t), busy) * lerp(1, squint, p.thinking), wide: lerp(0.105, 0.15, busy), tall: lerp(0.21, 0.23, busy) };
   }
   // Where the eyes turn for a pointer at (dx, dy) CSS px from the figure's centre: fully toward it within `near` px (the figure and a margin),
   // less and less beyond, and not at all from `reach` px (less than a sidebar row, so only the figure by the pointer looks). x and y are in
@@ -105,7 +107,7 @@
     const sc = S.rs || 1, ey = u * (S.ey - 0.03) - u * 0.05 * p.talking;
     // opts.look: where something near catches the eyes ({x, y} in head radii, w how strongly), over where they would look anyway.
     const e = eyes(t, p), lk = o.look || { x: 0, y: 0, w: 0 }, w = Math.max(0, Math.min(1, lk.w || 0));
-    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open, p.done, lerp(e.x, lk.x || 0, w) * u, lerp(e.y, lk.y || 0, w) * u);
+    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open, p.done, lerp(e.x, lk.x || 0, w) * u, lerp(e.y, lk.y || 0, w) * u, e.wide, e.tall);
     mouth(c, u * (S.ey + 0.3), u, t, p);
     if (o.details.blush && p.done > 0.01) {
       c.fillStyle = `rgba(255,255,255,${0.3 * p.done})`;
