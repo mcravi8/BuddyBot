@@ -208,18 +208,19 @@
       return {line:true,html:m?`<strong>${esc(m[1])}</strong><span> · working on ${esc(m[2])}</span>`:`<span>${esc(short(text,160))}</span>`};
     }
     if(kind==='stage_report'){
-      // Like a teammate saying it in a Slack channel: which stage, and the point in a sentence. What it was checked against ("Done when"), the
-      // rest of the report and its files are a click away; it used to be a big card with all of that open.
+      // Like a teammate saying it in a Slack channel: which stage, and the point in a sentence, with the files it saved attached as a Slack
+      // message's are. What it was checked against ("Done when") and the rest of the report are a click away; it used to be a big card with
+      // all of that open.
       const stage=stageOfNotice(plan,notice,text),{summary,rows,prose}=splitReport(text),done=stage?.status==='done';
       const criteria=Array.isArray(stage?.acceptance)&&stage.acceptance.length?`<div class="plan-card-section"><span class="plan-card-label">Done when</span><ul class="plan-card-criteria">${stage.acceptance.map(a=>`<li class="${done?'met':''}">${done?check:'<span class="plan-card-open" aria-hidden="true"></span>'}<span>${esc(a)}</span></li>`).join('')}</ul></div>`:'';
       const report=rows.length?`${summary?`<p class="plan-card-summary">${esc(summary)}</p>`:''}<dl class="plan-card-rows">${rows.map(r=>`<dt>${esc(r.label)}</dt><dd>${esc(r.text)}</dd>`).join('')}</dl>`:prose?`<div class="reply-markdown plan-card-prose">${markdown(prose)}</div>`:'';
       const {first}=firstLine(summary||rows[0]?.text||prose);
       const what=stage?`Stage ${Number(stage.n)}${done?' is done':''}`:'Stage report';
-      const files=filesHTML?`<div class="plan-card-section plan-card-files"><span class="plan-card-label">Files</span>${filesHTML}</div>`:'';
-      const more=report||criteria||files?`<details class="plan-card-more"><summary>Details</summary><div class="plan-card-more-body">${report}${criteria}${files}</div></details>`:'';
+      const files=filesHTML?`<div class="plan-card-files">${filesHTML}</div>`:'';
+      const more=report||criteria?`<details class="plan-card-more"><summary>Details</summary><div class="plan-card-more-body">${report}${criteria}</div></details>`:'';
       // A report that opens by naming its stage ("Stage 5 is done: …") is its own first line; otherwise the line says which stage it is.
       const named=stage&&new RegExp(`^stage\\s+${Number(stage.n)}\\b`,'i').test(first);
-      return {label:'Stage report',html:`<article class="plan-card plan-card-report plan-card-compact"><p class="plan-card-line">${named?esc(first):`<strong>${esc(what)}</strong>${first?` · ${esc(first)}`:''}`}</p><div class="plan-card-row">${more}${stage?aheadLine(plan,stage,{busy}):''}</div></article>`};
+      return {label:'Stage report',html:`<article class="plan-card plan-card-report plan-card-compact"><p class="plan-card-line">${named?esc(first):`<strong>${esc(what)}</strong>${first?` · ${esc(first)}`:''}`}</p>${files}<div class="plan-card-row">${more}${stage?aheadLine(plan,stage,{busy}):''}</div></article>`};
     }
     if(kind==='escalation'){
       const question=String(refs.question||text.replace(/\s*My recommendation:[\s\S]*$/,'')).trim(),recommendation=String(refs.recommendation||'').trim();
@@ -426,7 +427,8 @@
     setTimeout(reach,30);
   });
   document.addEventListener('click',async e=>{
-    const el=e.target.closest?.('[data-plan-toggle],[data-plan-authorize],[data-plan-change],[data-plan-stop],[data-plan-answer]');if(!el)return;
+    // The second click of a double-click is not a new tap: the card it was meant for may have just gone, and the next one moved under the pointer.
+    const el=e.target.closest?.('[data-plan-toggle],[data-plan-authorize],[data-plan-change],[data-plan-stop],[data-plan-answer]');if(!el||e.detail>1)return;
     const id=el.closest('[data-plan-strip]')?.dataset.planStrip||el.closest('[data-plan-card]')?.dataset.planCard,plan=current().plans.find(p=>p.id===id);if(!plan)return;
     if(el.hasAttribute('data-plan-toggle')){chosen.set(keyOf(plan),!isOpen(plan));mount();return;}
     if(el.hasAttribute('data-plan-change')){change(Number(el.dataset.planChange));return;}

@@ -97,7 +97,7 @@ test('the plan view offers the stages, authorizes the tapped one, then shows the
 
 // Plan notices as cards in the group chat: the stage report's next stage is chosen from the card, and Chief's question is answered from its card
 // with Approve, Disapprove or a written reply, each sent once as the person's own answer.
-test('a stage report and a decision are cards in the chat; the next stage and the answer are the person’s taps, sent once',{skip:process.platform!=='darwin'||!existsSync('/Applications/Google Chrome.app'),timeout:60000},async()=>{
+test('a stage report and a decision are short messages in the chat, details a click away; the next stage and the answer are the person’s taps, sent once',{skip:process.platform!=='darwin'||!existsSync('/Applications/Google Chrome.app'),timeout:60000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),'buddy-plan-cards-'));let context;
  try{
   context=await chromium.launchPersistentContext(join(dir,'browser.noindex'),{channel:'chrome',headless:true,viewport:{width:1280,height:900},reducedMotion:'reduce'});
@@ -128,18 +128,19 @@ test('a stage report and a decision are cards in the chat; the next stage and th
   });
   await page.evaluate(()=>BuddyWorkerUI.refresh(false));
   const report=page.locator('#messages [data-chat-item="plan-notice-r1"] .plan-card-report');await report.waitFor({timeout:8000});
-  assert.match(await report.locator('h3').innerText(),/Stage 1 · S01 Protocol freeze/);
-  assert.deepEqual(await report.locator(':scope > .plan-card-rows dt').allInnerTexts(),['Acceptance','Issues'],'the report’s labelled lines read as rows: what the stage achieved and what is open');
-  assert.deepEqual(await report.locator('.plan-card-more .plan-card-rows dt').allTextContents(),['Outputs'],'where the files went folds under Details');
-  assert.equal(await report.locator('.plan-card-more > summary').innerText(),'Details');
+  assert.equal(await report.locator('.plan-card-line').innerText(),'Stage 1 is done · S01 PASS, independently signed off by Vera.','one line: which stage, and the point');
+  assert.equal(await report.getByText('Done when').isVisible(),false,'what it was checked against is a click away');
+  await report.locator('.plan-card-more > summary').click();
+  assert.deepEqual(await report.locator('.plan-card-more .plan-card-rows dt').allInnerTexts(),['Acceptance','Outputs','Issues'],'Details shows the whole report');
+  assert.equal(await report.getByText('Done when').isVisible(),true);
   assert.equal(await page.locator('#messages [data-chat-item="plan-notice-r1"] .team-chat-author .message-author').innerText(),'Chief','under Chief’s name');
   await report.getByRole('button',{name:'Get stage 2 done',exact:true}).click();
   await report.getByText('Stage 2 started').waitFor({timeout:8000});
   assert.equal(await report.getByRole('button',{name:'Get stage 2 done'}).count(),0,'once chosen, the card says so');
   // Approve: the person's answer, in plain words, sent once.
   const decision=page.locator('#messages [data-chat-item="plan-notice-e1"] .plan-card-decision');await decision.waitFor();
-  assert.match(await decision.innerText(),/Needs your decision · a change to the plan/);
-  assert.match(await decision.innerText(),/Chief recommends\s+Suspend S02a recovery until runtime access is back/);
+  assert.match(await decision.innerText(),/Needs you · a change to the plan\s+Approve the recommended suspension\?/);
+  assert.match(await decision.innerText(),/Chief suggests: Suspend S02a recovery until runtime access is back/);
   await decision.getByRole('button',{name:'Approve',exact:true}).dblclick();
   // Answered, the question leaves the chat, and a toast says the answer went.
   await decision.waitFor({state:'detached',timeout:8000});await page.locator('#toast').filter({hasText:'Sent to Chief.'}).waitFor({timeout:8000});
