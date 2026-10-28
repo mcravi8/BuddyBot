@@ -90,12 +90,88 @@
     const k = Math.min(1, (reach - d) / (reach - near)), w = k * k * (3 - 2 * k), toward = Math.min(1, d / 14);
     return d ? { x: dx / d * 0.15 * toward, y: dy / d * 0.13 * toward, w } : { x: 0, y: 0, w };
   }
+
+  // ---- the body's moods (27 Oct, proposal "Agents that turn": the person chose B, the body turning and nodding, and then these moods) ----
+  // motion(mood, t, seed) is how the body moves in a mood at time t (seconds; for 'done' and 'appear', since it began): turn (yaw) and nod
+  // (pitch) in radians, hop (a share of its size, up is negative), zoom, alpha, how far the corner folds (peel, in head radii; null leaves the
+  // mood's own), how open the eyes are (open, 1 as the mood has them) and where they look (look, as gaze() gives it; null looks ahead).
+  //   idle      still.
+  //   thinking  squints hard, looks up to one side, pauses, then the other; the corner holds at a height, then lifts or drops to another at
+  //             an uneven moment, and the eyes narrow further as it lifts.
+  //   working   reads: left to right in small jumps with a stop on each word, a quick sweep back to the line below, and after a few lines a
+  //             look up to one side before reading on; the corner jumps between heights at uneven moments, now and then fluttering.
+  //   talking   faces you and nods along as it writes.
+  //   done      a hop, one small nod on landing, then rest. No lean.
+  //   appear    a new agent turns in from the side, grows a little past full size and back, and nods hello.
+  // seed (any number, one per agent) keeps two agents from moving in step.
+  const TURN = 28 * Math.PI / 180, NOD = 16 * Math.PI / 180;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v)), ease = k => k * k * (3 - 2 * k);
+  const outBack = k => { const c = 1.70158; return 1 + (c + 1) * (k - 1) ** 3 + c * (k - 1) ** 2; };
+  // Smooth noise between 0 and 1: random heights at whole numbers, eased between.
+  const hash = n => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
+  const noise = x => { const i = Math.floor(x); return lerp(hash(i), hash(i + 1), ease(x - i)); };
+  // Holds at a random height, then moves to the next, at uneven moments: time is warped by noise, so no two holds last the same.
+  const uneven = (x, seed) => { x += 0.9 * noise(x * 0.37 + seed); const i = Math.floor(x), k = ease(clamp((x - i - 0.55) / 0.45, 0, 1)); return lerp(hash(i + seed), hash(i + 1 + seed), k); };
+  // Key poses [phase 0–1, turn, nod] (turn and nod as shares of TURN and NOD), eased from one to the next.
+  function keyed(keys, ph) {
+    for (let i = 1; i < keys.length; i++) if (ph <= keys[i][0]) { const a = keys[i - 1], b = keys[i], k = ease((ph - a[0]) / Math.max(1e-6, b[0] - a[0])); return [lerp(a[1], b[1], k), lerp(a[2], b[2], k)]; }
+    const z = keys[keys.length - 1]; return [z[1], z[2]];
+  }
+  const PONDER = [[0, 0, 0.25], [0.12, -0.6, 0.75], [0.4, -0.55, 0.8], [0.52, 0.5, 0.6], [0.8, 0.45, 0.65], [0.92, 0, 0.25], [1, 0, 0.25]];
+  // One agent's reading: four pages of three to five lines, each line four to six words, its own stops; about forty seconds, then again.
+  const readings = new Map();
+  function reading(seed) {
+    const key = Math.round(seed * 1000) % 2147483646;
+    let r = readings.get(key); if (r) return r;
+    let s = key + 1; const rnd = () => (s = s * 16807 % 2147483647) / 2147483647;
+    const keys = [[0, -0.7, -0.55]]; let at = 0; const put = (dt, y, q) => { at += dt; keys.push([at, y, q]); };
+    for (let page = 0; page < 4; page++) {
+      const lines = 3 + Math.floor(rnd() * 3);
+      for (let l = 0; l < lines; l++) {
+        const q = -0.55 - 0.12 * l, words = 4 + Math.floor(rnd() * 3);
+        for (let w = 1; w <= words; w++) { const y = -0.7 + 1.4 * w / words + (rnd() - 0.5) * 0.08; put(0.07 + 0.05 * rnd(), y, q); put(0.12 + 0.6 * rnd() * rnd(), y, q); }
+        put(0.24, -0.7, q - 0.12); put(0.06, -0.7, q - 0.12);
+      }
+      const side = rnd() < 0.5 ? -1 : 1, y = side * (0.35 + 0.4 * rnd());
+      put(0.38, y, 0.2 + 0.25 * rnd()); put(0.5 + 0.9 * rnd(), y * 0.9, 0.25); put(0.4, -0.7, -0.55); put(0.15, -0.7, -0.55);
+    }
+    r = { keys: keys.map(k => [k[0] / at, k[1], k[2]]), length: at };
+    if (readings.size > 64) readings.clear(); readings.set(key, r); return r;
+  }
+  // Eyes that go with a pose: where the body turns, a little further, as with the pointer.
+  const eyesFor = (yaw, pitch) => ({ x: clamp(yaw / TURN * 0.15 + Math.sin(yaw) * 0.12, -0.2, 0.2), y: clamp(-pitch / NOD * 0.13 - Math.sin(pitch) * 0.1, -0.18, 0.18), w: 1 });
+  function motion(mood, t, seed = 0) {
+    const m = { yaw: 0, pitch: 0, hop: 0, zoom: 1, alpha: 1, peel: null, open: 1, look: null };
+    const turn = (yaw, pitch) => { m.yaw = yaw; m.pitch = pitch; m.look = eyesFor(yaw, pitch); };
+    const s = (seed % 97) * 7.13;
+    if (mood === 'thinking') {
+      const [ky, kp] = keyed(PONDER, ((t + s) % 7.3) / 7.3), lift = uneven(t * 0.6, 3 + s) ** 1.4, drift = (noise(t * 0.9 + 20 + s) - 0.5) * 0.12;
+      turn(TURN * (ky + drift), NOD * kp); m.peel = 0.12 + 0.42 * lift; m.open = 0.5 - 0.14 * lift;
+    } else if (mood === 'working') {
+      const r = reading(seed), [ky, kp] = keyed(r.keys, ((t + s) % r.length) / r.length);
+      turn(TURN * ky, NOD * kp);
+      m.peel = 0.15 + 0.36 * uneven(t * 1.5, 40 + s) + 0.07 * clamp((noise(t * 0.6 + 9 + s) - 0.62) / 0.3, 0, 1) * Math.sin(t * 17);
+    } else if (mood === 'talking') {
+      const n = Math.abs(Math.sin(t * 5.5)) * (0.6 + 0.4 * Math.sin(t * 1.9));
+      m.pitch = -NOD * 0.45 * n; m.look = { x: 0, y: -0.04 * n, w: 1 };
+    } else if (mood === 'done') {
+      const n = t >= 0.66 && t < 1.26 ? Math.sin((t - 0.66) / 0.6 * Math.PI) : 0;
+      m.hop = t < 0.66 ? -Math.sin(t / 0.66 * Math.PI) * 0.09 : 0; m.zoom = 1 - m.hop / 3; m.pitch = -NOD * 0.5 * n; m.look = { x: 0, y: 0.05 * n, w: 1 };
+    } else if (mood === 'appear') {
+      if (t < 1.1) { const k = Math.max(0, t) / 1.1; m.yaw = 70 * Math.PI / 180 * (1 - ease(Math.min(1, k * 1.3))); m.zoom = outBack(k); m.alpha = Math.min(1, k * 3); }
+      else if (t < 1.8) turn(0, -NOD * 0.55 * Math.sin((t - 1.1) / 0.7 * Math.PI));
+    }
+    return m;
+  }
+  // How long a mood that plays once lasts.
+  const ONCE = { done: 1.3, appear: 1.8 };
+
   function body(c, u, t, p, o, col, size) {
     const S = SHAPES[o.shape] || SHAPES.hex, rw = u * 0.2, B = u * 4;
     const ang = S.ang[o.side === 'left' ? 1 : 0], nx = Math.cos(ang), ny = Math.sin(ang);
     const pts = S.pts.map(q => [q[0] * u, q[1] * u]);
     let hs = -1e9; for (const q of pts) hs = Math.max(hs, q[0] * nx + q[1] * ny); hs += rw / 2;
-    const k = fold(t, p), d = hs - k * u, dep = o.details.depth, M = c.getTransform(), sx = Math.hypot(M.a, M.b);
+    const k = o.peel != null ? o.peel : fold(t, p), d = hs - k * u, dep = o.details.depth, M = c.getTransform(), sx = Math.hypot(M.a, M.b);
     const lin = (x0, y0, x1, y1, st) => { const g = c.createLinearGradient(x0, y0, x1, y1); st.forEach(q => g.addColorStop(q[0], q[1])); return g; };
     const noShadow = () => { c.shadowColor = 'transparent'; c.shadowBlur = 0; c.shadowOffsetX = 0; c.shadowOffsetY = 0; };
     const path = new Path2D(); pts.forEach((q, i) => i ? path.lineTo(q[0], q[1]) : path.moveTo(q[0], q[1])); path.closePath();
@@ -132,7 +208,7 @@
     // opts.look: where something near catches the eyes ({x, y} in head radii, w how strongly), over where they would look anyway.
     const e = eyes(t, p), lk = o.look || { x: 0, y: 0, w: 0 }, w = Math.max(0, Math.min(1, lk.w || 0));
     if (dep) { c.shadowColor = 'rgba(0,0,0,.24)'; c.shadowBlur = u * 0.05 * sx; c.shadowOffsetY = u * 0.035 * sx; }
-    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open, p.done, lerp(e.x, lk.x || 0, w) * u, lerp(e.y, lk.y || 0, w) * u, e.wide, e.tall, col, o.details.eyeshade);
+    ringEyes(c, u * 0.24 * sc, ey, u, sc, e.open * (o.open != null ? o.open : 1), p.done, lerp(e.x, lk.x || 0, w) * u, lerp(e.y, lk.y || 0, w) * u, e.wide, e.tall, col, o.details.eyeshade);
     noShadow();
     mouth(c, u * (S.ey + 0.3), u, t, p);
     if (o.details.blush && p.done > 0.01) {
@@ -208,10 +284,19 @@
     if (!s) { s = { flat: document.createElement('canvas'), mid: document.createElement('canvas') }; for (const c of [s.flat, s.mid]) { c.width = px; c.height = px; } if (scratch.size > 24) scratch.clear(); scratch.set(px, s); }
     return s;
   }
+  // The pose may also lift the figure (hop, a share of its size, up negative), scale it about its centre (zoom) and fade it (alpha).
   function drawPosed(c, size, t, p, opts, pose) {
-    const yaw = pose && pose.yaw || 0, pitch = pose && pose.pitch || 0;
+    const hop = pose && pose.hop || 0, zoom = pose && pose.zoom != null ? pose.zoom : 1, fade = pose && pose.alpha != null ? pose.alpha : 1;
+    if (zoom <= 0.001 || fade <= 0.001) return;
+    const M = c.getTransform(), d = Math.max(1, Math.hypot(M.a, M.b)), moved = hop || zoom !== 1 || fade !== 1;
+    if (moved) { c.save(); c.globalAlpha *= fade; c.translate(size / 2, size / 2 + hop * size); c.scale(zoom, zoom); c.translate(-size / 2, -size / 2); }
+    turned(c, size, t, p, opts, pose && pose.yaw || 0, pose && pose.pitch || 0, d);
+    if (moved) c.restore();
+  }
+  // d: the canvas pixels per CSS px before any zoom, so a figure growing in keeps drawing at one resolution.
+  function turned(c, size, t, p, opts, yaw, pitch, d) {
     if (Math.abs(yaw) < 0.002 && Math.abs(pitch) < 0.002) return draw(c, size, t, p, opts);
-    const M = c.getTransform(), d = Math.max(1, Math.hypot(M.a, M.b)), px = Math.ceil(size * d), { flat, mid } = pair(px);
+    const px = Math.ceil(size * d), { flat, mid } = pair(px);
     const f = flat.getContext('2d'); f.setTransform(d, 0, 0, d, 0, 0); f.clearRect(0, 0, size, size); draw(f, size, t, p, opts);
     const D = size * 2.6 * d, cx = px / 2;
     let src = flat;
@@ -233,7 +318,7 @@
     } else c.drawImage(src, 0, 0);
     c.restore();
   }
-  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, drawPosed, fold, bob, eyes, gaze, SHAPES, COLORS, STATES };
+  const api = { mount: (canvas, opts) => new Figure(canvas, opts || {}), draw, drawPosed, motion, ONCE, fold, bob, eyes, gaze, SHAPES, COLORS, STATES };
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.BuddyFold = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -3,8 +3,10 @@
    the sidebar's dot field. Each agent's and group's picture keeps its place (a canvas, or a slot in a sidebar row) under an id the dot painter
    doesn't know, so it leaves them alone and this file paints them. In the sidebar, a figure near the pointer looks at it, and its body turns
    and nods toward it too.
-   The mood follows what the agent is doing, as buddy-figure-modes.js reads it: ready → idle, planning or working → thinking, writing a reply
-   → talking, just finished → done (about two seconds, then idle). The figure in a chat's floating header is a still picture, as before. */
+   The mood follows what the agent is doing, as buddy-figure-modes.js reads it, and the body moves with it (BuddyFold.motion, the moods the
+   person chose on 27 Oct): a reply begun with no words yet → thinking, a task running, a setup or its turn in a group → working, writing a
+   reply → talking, just finished → done (about two seconds, then idle), anything else → idle, still. An agent that arrives on its own (just
+   created) appears: it turns in from the side, grows into place and nods hello. The figure in a chat's floating header is a still picture. */
 (function(root){
   'use strict';
   const F=root.BuddyFigures,Fold=root.BuddyFold;
@@ -44,8 +46,14 @@
 
   // ---- moods ----------------------------------------------------------------------------------------------------------------------------
   const calm=typeof matchMedia==='function'?matchMedia('(prefers-reduced-motion: reduce)'):{matches:false};
+  const MOODS=['idle','thinking','working','talking','done'];
+  // The renderer's own mood weights for each mood: thinking and working both have busy eyes and float.
+  const WEIGHTS={idle:{thinking:0,talking:0,done:0},thinking:{thinking:1,talking:0,done:0},working:{thinking:1,talking:0,done:0},talking:{thinking:0,talking:1,done:0},done:{thinking:0,talking:0,done:1}};
+  // Each agent's figure: t its renderer's clock (slower while it thinks), clock its body's, w how much of each mood it shows (easing from one
+  // to the next), since when its mood began, seed so agents move out of step, appearAt when it arrived.
   const sims={};
-  const sim=id=>sims[id]||(sims[id]={t:Math.random()*20,p:{thinking:0,talking:0,done:0},want:'idle'});
+  const seedOf=id=>{let h=7;for(const ch of String(id))h=(h*31+ch.charCodeAt(0))%9973;return h;};
+  const sim=id=>sims[id]||(sims[id]={t:Math.random()*20,clock:Math.random()*40,w:{idle:1,thinking:0,working:0,talking:0,done:0},want:'idle',since:0,seed:seedOf(id),appearAt:null});
   // Who is writing a reply right now: a direct chat streaming its answer, or the lead of a group bringing the answers together.
   function talkers(){
     const s=live(),out=new Set();if(!s)return out;
@@ -68,26 +76,61 @@
     }
     return out;
   }
-  // Only what the agent is doing itself moves it: a task running, a reply being started or written. "Planning" also covers work that only
-  // waits (queued, retrying later, a result waiting for the supervisor's verdict); those agents rest, so their figures stay still (27 Oct:
-  // Chief's and Lyra's peels kept moving while their finished results waited for Chief).
+  // Only what the agent is doing itself moves it: a reply it has begun and not yet put into words (thinking), a task running, a setup or its
+  // turn in a group (working), a reply being written (talking). "Planning" also covers work that only waits (queued, retrying later, a result
+  // waiting for the supervisor's verdict); those agents rest, so their figures stay still (27 Oct: Chief's and Lyra's peels kept moving while
+  // their finished results waited for Chief).
   function mood(id,talking,starting=new Set()){
     const mode=F.getMode?F.getMode(id):'ready';
     if(mode==='done')return 'done';
     if(talking.has(id))return 'talking';
-    return mode==='working'||(mode==='planning'&&starting.has(id))?'thinking':'idle';
+    if(starting.has(id))return 'thinking';
+    return mode==='working'?'working':'idle';
   }
+  // The agents there when Buddy opened, and every one since. One that arrives on its own afterwards was just created and appears; several at
+  // once are a workspace loading, and simply show.
+  let seen=null;
   function step(dt){
-    const talking=talkers(),starting=starters(),still=calm.matches;
-    for(const a of live()?.agents||[]){
-      const m=sim(a.id);m.want=mood(a.id,talking,starting);
-      m.t+=still?0:dt;
-      for(const q of ['thinking','talking','done']){const target=m.want===q?1:0;m.p[q]=still?target:m.p[q]+(target-m.p[q])*Math.min(1,dt*5);}
+    const agents=live()?.agents||[],talking=talkers(),starting=starters(),still=calm.matches;
+    const fresh=seen?agents.filter(a=>!seen.has(a.id)):[];
+    seen=new Set([...(seen||[]),...agents.map(a=>a.id)]);
+    for(const a of agents){
+      const m=sim(a.id),want=mood(a.id,talking,starting);
+      if(fresh.length===1&&fresh[0]===a&&!still)m.appearAt=m.clock;
+      if(want!==m.want){m.want=want;m.since=m.clock;}
+      if(!still){m.clock+=dt;m.t+=dt*(1-.55*m.w.thinking);}
+      for(const q of MOODS){const target=m.want===q?1:0;m.w[q]=still?target:m.w[q]+(target-m.w[q])*Math.min(1,dt*5);}
     }
+  }
+  // An agent's pose now: each mood's motion, weighed by how much it shows, then the arrival of a new agent over it.
+  function posed(m){
+    const out={yaw:0,pitch:0,hop:0,zoom:0,alpha:0,peel:0,open:0,look:{x:0,y:0,w:0}},p={thinking:0,talking:0,done:0};
+    let total=0;
+    for(const q of MOODS){
+      const w=m.w[q];if(w<.001)continue;total+=w;
+      const mo=Fold.motion(q,q==='done'?m.clock-m.since:m.clock,m.seed);
+      for(const k of ['yaw','pitch','hop','zoom','alpha','open'])out[k]+=mo[k]*w;
+      out.peel+=(mo.peel!=null?mo.peel:Fold.fold(m.t,WEIGHTS[q]))*w;
+      if(mo.look)for(const k of ['x','y','w'])out.look[k]+=mo.look[k]*w;
+      for(const k in p)p[k]+=WEIGHTS[q][k]*w;
+    }
+    if(total>0)for(const k of ['yaw','pitch','hop','zoom','alpha','open','peel'])out[k]/=total;
+    if(total>0){for(const k of ['x','y','w'])out.look[k]/=total;for(const k in p)p[k]/=total;}
+    if(m.appearAt!=null){
+      const age=m.clock-m.appearAt;
+      if(age>=Fold.ONCE.appear||calm.matches)m.appearAt=null;
+      else{
+        // The last moments ease from the arrival into whatever the agent is doing.
+        const a=Fold.motion('appear',age,m.seed),k=Math.max(0,Math.min(1,(age-Fold.ONCE.appear+.4)/.4)),e=k*k*(3-2*k);
+        for(const q of ['yaw','pitch','hop','zoom','alpha'])out[q]=a[q]+(out[q]-a[q])*e;
+        const al=a.look||{x:0,y:0,w:0};for(const q of ['x','y','w'])out.look[q]=al[q]+(out.look[q]-al[q])*e;
+      }
+    }
+    return {pose:out,p};
   }
 
   // ---- painting -------------------------------------------------------------------------------------------------------------------------
-  const REST={thinking:0,talking:0,done:0},TURN=28*Math.PI/180,NOD=16*Math.PI/180;
+  const REST={thinking:0,talking:0,done:0},TURN=28*Math.PI/180,NOD=16*Math.PI/180,STILL={pose:{yaw:0,pitch:0,hop:0,zoom:1,alpha:1,peel:null,open:1,look:{x:0,y:0,w:0}},p:REST};
   // A group: up to four of its members, side by side or in a square.
   const SPOTS={1:[[.5,.5,1]],2:[[.29,.5,.6],[.71,.5,.6]],3:[[.29,.29,.52],[.71,.29,.52],[.5,.73,.52]],4:[[.27,.27,.5],[.73,.27,.5],[.27,.73,.5],[.73,.73,.5]]};
   function paint(el){
@@ -95,17 +138,19 @@
     const d=Math.min(2,root.devicePixelRatio||1),px=Math.round(size*d);
     if(el.width!==px){el.width=px;el.height=px;}
     const c=el.getContext('2d');c.setTransform(d,0,0,d,0,0);c.clearRect(0,0,size,size);
-    const still=!!el.closest('.island')||calm.matches;
     // In the sidebar, a figure near the pointer looks at it; one farther away keeps looking ahead (Fold.gaze). Each eases there.
     const box=pointer&&el.closest('.sidebar')?el.getBoundingClientRect():null,eased=el.foldGaze||(el.foldGaze=[]);
     const figure=(agent,x,y,s,k=0)=>{
-      const m=agent?sim(agent.id):null,sz=size*s;
+      const m=agent?.id?sim(agent.id):null,sz=size*s;
       const want=box?Fold.gaze(pointer.x-(box.left+x*box.width),pointer.y-(box.top+y*box.height)):{x:0,y:0,w:0},g=eased[k]||(eased[k]={x:0,y:0,w:0});
       for(const q of ['x','y','w'])g[q]+=(want[q]-g[q])*.25;
       c.save();c.translate(x*size-sz/2,y*size-sz/2);
-      // The body follows the eyes: it turns and nods toward the pointer (up to 28° and 16°, proposal "Agents that turn", option B).
-      const pose={yaw:TURN*Math.max(-1,Math.min(1,g.x/.15))*g.w,pitch:-NOD*Math.max(-1,Math.min(1,g.y/.13))*g.w};
-      Fold.drawPosed(c,sz,still||!m?2.1:m.t,el.closest('.island')||!m?REST:m.p,{...look(agent),look:g,details:{shadow:sz>=32}},pose);
+      // The mood moves the body; near the pointer, the body turns and nods toward it instead (up to 28° and 16°, proposal "Agents that
+      // turn", option B), and the eyes follow the pointer over where the mood has them looking.
+      const {pose,p}=m&&!el.closest('.island')?posed(m):STILL,ml=pose.look;
+      const lw=1-(1-ml.w)*(1-g.w),eyes=lw>0?{x:(ml.x*ml.w*(1-g.w)+g.x*g.w)/lw,y:(ml.y*ml.w*(1-g.w)+g.y*g.w)/lw,w:lw}:{x:0,y:0,w:0};
+      const body={...pose,yaw:pose.yaw+(TURN*Math.max(-1,Math.min(1,g.x/.15))-pose.yaw)*g.w,pitch:pose.pitch+(-NOD*Math.max(-1,Math.min(1,g.y/.13))-pose.pitch)*g.w};
+      Fold.drawPosed(c,sz,!m||el.closest('.island')?2.1:m.t,p,{...look(agent),look:eyes,peel:pose.peel,open:pose.open,details:{shadow:sz>=32}},body);
       c.restore();
     };
     if(el.dataset.foldGroup!==undefined){
@@ -146,5 +191,5 @@
   // The theme changes the inks: repaint everything, the still pictures too.
   new MutationObserver(()=>{for(const el of document.querySelectorAll('canvas.fold-fig')){delete el.dataset.foldPainted;paint(el);}}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
   raf=requestAnimationFrame(frame);
-  root.BuddyFoldAgents={look,mood,paint,current:id=>mood(id,talkers(),starters())};
+  root.BuddyFoldAgents={look,mood,paint,current:id=>mood(id,talkers(),starters()),pose:id=>sims[id]?posed(sims[id]).pose:null,appearing:id=>sims[id]?.appearAt!=null};
 })(typeof window!=='undefined'?window:globalThis);

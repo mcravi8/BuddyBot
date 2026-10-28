@@ -21,9 +21,11 @@ test('a figure moves only while its agent works: waiting rests it, a task runnin
   assert.equal(await mood(),'idle','work that only waits keeps the figure still');
   // A reply starting in Lyra's chat is Lyra getting to work.
   await page.evaluate(()=>{state.runs={r1:{runId:'r1',target:'lyra',status:'starting'}};});
-  assert.equal(await mood(),'thinking','a reply starting moves the figure');
-  await page.evaluate(()=>{state.runs={};BuddyFigures.setMode('lyra','working');});
-  assert.equal(await mood(),'thinking','a task running moves the figure');
+  assert.equal(await mood(),'thinking','a reply begun with no words yet is the agent thinking');
+  await page.evaluate(()=>{state.runs={r1:{runId:'r1',target:'lyra',status:'answering'}};state.messages.lyra=[{id:'m0',who:'lyra',runId:'r1',body:'',status:'answering'}];});
+  assert.equal(await mood(),'thinking','still no words: still thinking');
+  await page.evaluate(()=>{state.runs={};state.messages.lyra=[];BuddyFigures.setMode('lyra','working');});
+  assert.equal(await mood(),'working','a task running is the agent working');
   await page.evaluate(()=>{state.runs={r2:{runId:'r2',target:'lyra',status:'answering'}};state.messages.lyra=[{id:'m',who:'lyra',runId:'r2',body:'Here is',status:'answering'}];});
   assert.equal(await mood(),'talking','writing a reply');
   await page.evaluate(()=>{state.runs={};BuddyFigures.setMode('lyra','done');});
@@ -68,5 +70,74 @@ test('a sidebar figure near the pointer looks at it, and one far away does not',
   assert.ok(diffs.pointer>100&&diffs.working>100,`the pointer turns the eyes and work moves the figure: ${JSON.stringify(diffs)}`);
   assert.equal(diffs.unposed,0,'a body that is not turned is drawn as it is');
   assert.ok(diffs.turned>200&&diffs.nodded>200,`the body turns and nods (option B): ${JSON.stringify(diffs)}`);
+ }finally{await context?.close();await rm(dir,{recursive:true,force:true});}
+});
+
+// The moods the person chose on 27 Oct (proposal "Agents that turn"): idle still; thinking squints and its corner holds at uneven heights,
+// moving at uneven moments; working reads left to right in small jumps and sweeps back to the line below; writing a reply nods; done hops
+// and nods once, with no lean; a new agent turns in, grows into place and nods hello. Agents move out of step.
+test('each mood moves the body as chosen, and an agent created on its own appears',{skip:process.platform!=='darwin'||!existsSync('/Applications/Google Chrome.app'),timeout:60000},async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'buddy-fold-motion-'));let context;
+ try{
+  context=await chromium.launchPersistentContext(dir,{channel:'chrome',headless:true,viewport:{width:1280,height:860}});const page=context.pages()[0];
+  const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+  await page.goto(new URL('../../relay/index.html',import.meta.url).href);await page.waitForFunction(()=>!!window.BuddyFigures&&!!window.BuddyFoldAgents);
+  const m=await page.evaluate(()=>{
+   const at=(mood,from,to,step,seed=3)=>{const out=[];for(let t=from;t<=to+1e-9;t+=step)out.push(BuddyFold.motion(mood,t,seed));return out;};
+   const idle=at('idle',0,10,.5);
+   const think=at('thinking',0,30,.1),work=at('working',0,40,.05),other=at('working',0,40,.05,8);
+   const peels=think.map(x=>x.peel),steps=peels.slice(1).map((v,i)=>Math.abs(v-peels[i]));
+   // Working's turn along the first line: rises in small jumps with stops between, then drops back fast to start the next line.
+   const yaw=work.map(x=>x.yaw);let rises=0,holds=0,sweep=0;
+   for(let i=1;i<yaw.length;i++){const d=yaw[i]-yaw[i-1];if(d>.004)rises++;else if(Math.abs(d)<.0005)holds++;if(d<-.08)sweep++;}
+   const done=at('done',0,2,.05),appear=at('appear',0,1.8,.05);
+   return {
+    idle:idle.every(x=>!x.yaw&&!x.pitch&&!x.hop&&x.zoom===1&&x.peel==null&&x.open===1),
+    thinkOpen:Math.max(...think.map(x=>x.open)),thinkRange:Math.max(...peels)-Math.min(...peels),thinkHolds:steps.filter(d=>d<.002).length/steps.length,thinkUp:think.filter(x=>x.pitch>0).length/think.length,
+    rises,holds,sweep,readDown:work.filter(x=>x.pitch<0).length/work.length,workPeelRange:Math.max(...work.map(x=>x.peel))-Math.min(...work.map(x=>x.peel)),
+    apart:yaw.filter((v,i)=>Math.abs(v-other[i].yaw)>.05).length/yaw.length,
+    doneHop:Math.min(...done.map(x=>x.hop)),doneNod:Math.min(...done.map(x=>x.pitch)),doneRest:BuddyFold.motion('done',BuddyFold.ONCE.done+.1,3),doneKeys:Object.keys(done[0]),
+    appearStart:appear[0],appearEnd:BuddyFold.motion('appear',BuddyFold.ONCE.appear,3),appearTurn:appear[3].yaw
+   };
+  });
+  assert.ok(m.idle,'idle is still');
+  assert.ok(m.thinkOpen<=.5,`thinking squints: ${m.thinkOpen}`);
+  assert.ok(m.thinkRange>.15&&m.thinkHolds>.25,`thinking's corner holds at uneven heights and moves between them: ${m.thinkRange} ${m.thinkHolds}`);
+  assert.ok(m.thinkUp>.6,`thinking looks up: ${m.thinkUp}`);
+  assert.ok(m.rises>40&&m.holds>100&&m.sweep>=3,`working reads in jumps with stops, and sweeps back line by line: ${m.rises} ${m.holds} ${m.sweep}`);
+  assert.ok(m.readDown>.7,`working keeps its head down over the work: ${m.readDown}`);
+  assert.ok(m.workPeelRange>.2,`working's corner jumps: ${m.workPeelRange}`);
+  assert.ok(m.apart>.5,`two agents do not read in step: ${m.apart}`);
+  assert.ok(m.doneHop<-.05&&m.doneNod<-.05,`done hops and nods: ${m.doneHop} ${m.doneNod}`);
+  assert.ok(!m.doneKeys.includes('roll'),'done has no lean');
+  assert.ok(!m.doneRest.hop&&!m.doneRest.pitch&&m.doneRest.zoom===1,'then rests');
+  assert.ok(m.appearStart.zoom<.05&&m.appearStart.alpha<.05,'a new agent starts small and clear');
+  assert.ok(m.appearTurn>.5,`and turns in from the side: ${m.appearTurn}`);
+  assert.ok(!m.appearEnd.yaw&&!m.appearEnd.pitch&&m.appearEnd.zoom===1&&m.appearEnd.alpha===1,'ending in place, facing you');
+
+  // In the app: the agents Buddy opens with simply show; one agent created on its own appears, then rests; several at once simply show.
+  await page.evaluate(()=>{
+   document.getElementById('onboarding-root').innerHTML='';closeModal();
+   state.agents=[{id:'chief',name:'Chief',role:'Chief',avatarShape:'diamond',avatarColor:'lilac',setupStatus:'ready',tools:{}},{id:'lyra',name:'Lyra',role:'Writer',avatarShape:'hex',avatarColor:'peach',setupStatus:'ready',tools:{}}];
+   state.groups=[];state.onboarding={status:'completed',agentId:'chief'};state.runs={};state.tasks=[];state.messages={chief:[],lyra:[]};
+   BuddyDesktop={saveState:async()=>({saved:true})};ui.view={kind:'chat',target:'chief'};render();
+  });
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(()=>BuddyFoldAgents.appearing('chief')||BuddyFoldAgents.appearing('lyra')),false,'agents that arrive together simply show');
+  await page.evaluate(()=>{state.agents.push({id:'vera',name:'Vera',role:'Reviewer',avatarShape:'pill',avatarColor:'mint',setupStatus:'ready',tools:{}});state.messages.vera=[];render();});
+  await page.waitForTimeout(150);
+  assert.equal(await page.evaluate(()=>BuddyFoldAgents.appearing('vera')),true,'an agent created on its own appears');
+  await page.waitForTimeout(2300);
+  assert.equal(await page.evaluate(()=>BuddyFoldAgents.appearing('vera')),false,'and then is simply there');
+  const vera=await page.evaluate(()=>BuddyFoldAgents.pose('vera'));
+  assert.ok(Math.abs(vera.yaw)<.01&&Math.abs(vera.zoom-1)<.01&&Math.abs(vera.alpha-1)<.01,`at rest, in place: ${JSON.stringify(vera)}`);
+  // Working moves Lyra's body; Chief, idle, stays still.
+  await page.evaluate(()=>BuddyFigures.setMode('lyra','working'));
+  await page.waitForTimeout(900);
+  const a=await page.evaluate(()=>BuddyFoldAgents.pose('lyra'));await page.waitForTimeout(1200);const b=await page.evaluate(()=>BuddyFoldAgents.pose('lyra'));
+  assert.ok(a.pitch<0&&(Math.abs(a.yaw-b.yaw)>.02||Math.abs(a.peel-b.peel)>.02),`working reads with its head down: ${JSON.stringify([a,b])}`);
+  const chief=await page.evaluate(()=>BuddyFoldAgents.pose('chief'));
+  assert.ok(!chief.yaw&&!chief.pitch&&!chief.hop,'idle Chief stays still');
+  assert.deepEqual(errors,[]);
  }finally{await context?.close();await rm(dir,{recursive:true,force:true});}
 });
