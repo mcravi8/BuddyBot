@@ -191,11 +191,11 @@
   let cfg={agent:()=>null,group:()=>null,agentIds:()=>[]};
   const sims={},modes={},focus={},focusGroup={},groupWork={};
   let handoffs=[],timers=[],mouse=null,hoverId=null,hoverPrev=null,slotPos={},poked=0;
-  let clock=0,last=0,fc=0,raf=0,started=false,dirty=true,io=null,mo=null,canvases=[],calmQuery=null,paintedField=null;
+  let clock=0,last=0,fc=0,raf=0,repaint=0,started=false,dirty=true,io=null,mo=null,canvases=[],calmQuery=null,paintedField=null;
   const visible=new Set(),observed=new Set(),fresh=new Set();
   let baseCache={key:'',canvas:null};
   const sim=id=>sims[id]||(sims[id]=mkSim());
-  const configure=options=>{cfg=Object.assign({},cfg,options);};
+  const configure=options=>{cfg=Object.assign({},cfg,options);requestPaint();};
   // Extensions add to the field without the engine knowing what they draw: frame(host) runs before the figures step,
   // listening(id)/sleeping(id) steer a figure's eyes and rest, and field(ctx) writes cells into the shared dot field.
   const extensions=[];
@@ -272,6 +272,18 @@
     drawAv(c,n,es,R,X,t);
   }
 
+  function renderedRect(el){
+    // Closed details can retain layout boxes for their skipped contents. The shared
+    // canvas must respect disclosure visibility instead of painting those boxes.
+    for(let detail=el.closest('details:not([open])');detail;detail=detail.parentElement?.closest('details:not([open])')){
+      if(!detail.querySelector(':scope > summary')?.contains(el))return null;
+    }
+    const r=el.getBoundingClientRect();
+    if(!r.width||!r.height)return null;
+    const visibility=getComputedStyle(el).visibility;
+    return visibility==='hidden'||visibility==='collapse'?null:r;
+  }
+
   function paintField(side,cv,t,dpr){
     const rect=side.getBoundingClientRect(),W=rect.width,H=rect.height,P=2.6;
     if(W<8||H<8||rect.right<=0)return;
@@ -294,8 +306,8 @@
     const listY0=lr?lr.top-rect.top:-Infinity,listY1=lr?lr.bottom-rect.top:Infinity;
     const pos={};
     for(const el of side.querySelectorAll('[data-slot]')){
-      const r=el.getBoundingClientRect();
-      if(!r.width)continue;
+      const r=renderedRect(el);
+      if(!r)continue;
       pos[el.dataset.slot]={x:r.left-rect.left+r.width/2,y:r.top-rect.top+r.height/2,spec:{kind:el.dataset.kind,id:el.dataset.figId,size:+el.dataset.size||50},scroll:el.dataset.slot.startsWith('row:')};
     }
     slotPos={};for(const key in pos)slotPos[key]=pos[key];
@@ -303,7 +315,7 @@
       const p=pos[key];if(p.spec.kind!=='group')continue;
       (cfg.group(p.spec.id)?.members||[]).slice(0,4).forEach((id,k)=>{if(!slotPos['row:'+id])slotPos['row:'+id]={x:p.x+HUD[k].x*p.spec.size/2,y:p.y+HUD[k].y*p.spec.size/2};});
     }
-    const rowEls=[...side.querySelectorAll('.chat-row[data-id]')];
+    const rowEls=[...side.querySelectorAll('.chat-row[data-id]')].filter(el=>renderedRect(el));
     hoverId=null;
     if(mouse){const mx=mouse.x+rect.left,my=mouse.y+rect.top;for(const el of rowEls){const r=el.getBoundingClientRect();if(mx>=r.left&&mx<=r.right&&my>=r.top&&my<=r.bottom){hoverId=el.dataset.id;break;}}}
     const sel=rowEls.find(el=>el.classList.contains('selected')||el.getAttribute('aria-current')==='page');
@@ -399,7 +411,7 @@
     for(const el of canvases)if(!observed.has(el)){if(io)io.observe(el);observed.add(el);fresh.add(el);}
     dirty=false;
   }
-  function frame(){
+  function frame(force=false){
     const tn=performance.now()/1000,dt=Math.min(1/30,tn-(last||tn));last=tn;
     clock+=dt;
     const calm=!!(calmQuery&&calmQuery.matches);
@@ -425,14 +437,21 @@
     fc++;
     const dpr=Math.min(2,window.devicePixelRatio||1);
     // A sidebar that was just rebuilt is painted at once, so a re-render never shows the dot field blank for a frame.
-    if(fieldEl&&(fieldEl!==paintedField||fc%2===0)){paintField(side,fieldEl,clock,dpr);paintedField=fieldEl;}
+    if(fieldEl&&(force||fieldEl!==paintedField||fc%2===0)){paintField(side,fieldEl,clock,dpr);paintedField=fieldEl;}
     let i=0;
     for(const el of canvases){
       i++;
-      if(!fresh.has(el)&&((i+fc)%2||(io&&!visible.has(el))))continue;
+      if(!force&&!fresh.has(el)&&((i+fc)%2||(io&&!visible.has(el))))continue;
       fresh.delete(el);
       paintCanvas(el,clock,dpr);
     }
+  }
+  function drawFrame(force=false){try{frame(force);}catch(error){console.error('Buddy figures stopped painting',error);}}
+  function requestPaint(){
+    // WebKit can suspend animation callbacks while the app is behind another window.
+    // Paint changed content once anyway; animations still use the normal frame loop.
+    if(!started||repaint)return;
+    repaint=setTimeout(()=>{repaint=0;drawFrame(true);},32);
   }
   function start(){
     if(started||typeof document==='undefined')return;
@@ -440,17 +459,20 @@
     started=true;
     if(typeof matchMedia!=='undefined')calmQuery=matchMedia('(prefers-reduced-motion: reduce)');
     if(typeof IntersectionObserver!=='undefined')io=new IntersectionObserver(entries=>{for(const e of entries)e.isIntersecting?visible.add(e.target):visible.delete(e.target);});
-    mo=new MutationObserver(()=>{dirty=true;});mo.observe(document.body,{childList:true,subtree:true});
+    mo=new MutationObserver(()=>{dirty=true;requestPaint();});mo.observe(document.body,{childList:true,subtree:true});
+    document.addEventListener('toggle',requestPaint,true);
+    window.addEventListener('resize',requestPaint);
     document.addEventListener('mousemove',e=>{
       const side=e.target.closest&&e.target.closest('.sidebar');
       if(!side){mouse=null;return;}
       const r=side.getBoundingClientRect();mouse={x:e.clientX-r.left,y:e.clientY-r.top};
     },{passive:true});
     document.documentElement.addEventListener('mouseleave',()=>{mouse=null;});
-    const loop=()=>{try{frame();}catch(error){console.error('Buddy figures stopped painting',error);return;}raf=requestAnimationFrame(loop);};
+    const loop=()=>{clearTimeout(repaint);repaint=0;drawFrame();raf=requestAnimationFrame(loop);};
     raf=requestAnimationFrame(loop);
+    requestPaint();
   }
-  function stop(){cancelAnimationFrame(raf);timers.forEach(clearTimeout);timers=[];started=false;if(io)io.disconnect();if(mo)mo.disconnect();io=mo=null;observed.clear();visible.clear();fresh.clear();}
+  function stop(){cancelAnimationFrame(raf);clearTimeout(repaint);repaint=0;document.removeEventListener('toggle',requestPaint,true);window.removeEventListener('resize',requestPaint);timers.forEach(clearTimeout);timers=[];started=false;if(io)io.disconnect();if(mo)mo.disconnect();io=mo=null;observed.clear();visible.clear();fresh.clear();}
 
   const engine={mkSim,stepSim,mkR,prep,evalM,drawAv,gridFor,headCells,sdBox,sdHex,eyeSD,setDark,HUD,HUD_ORDER,EYEDX,hash,easeIO,rnd,sst,TAU,groupSweep,trail,LAP};
   const hovered=()=>hoverId;

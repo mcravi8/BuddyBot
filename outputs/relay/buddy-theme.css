@@ -62,6 +62,32 @@ button,input,textarea,select{font-family:inherit}
 .preview-status{margin:2px 0 0;justify-content:flex-start;padding:4px 8px;font:400 11px var(--mono);color:var(--text4)}
 .icon-button:hover{background:var(--hover)}
 .icon-button{border-radius:10px}
+.compact-chat-search,.compact-chat-badge,.sidebar-layout-toggle{display:none}
+@media(min-width:681px){
+  .sidebar-layout-toggle{display:grid}
+  .shell.sidebar-compact{grid-template-columns:84px minmax(0,1fr)}
+  .sidebar-compact .sidebar-header{flex-direction:column;padding:12px 4px 8px;gap:5px}
+  .sidebar-compact .buddy-brand h2{display:none}
+  .sidebar-compact .sidebar-header-actions{flex-direction:column;gap:2px}
+  .sidebar-compact .chat-search{display:none}
+  .sidebar-compact .compact-chat-search{display:grid;align-self:center;margin:0 0 5px}
+  .sidebar-compact .chat-list{padding:4px 6px 12px}
+  .sidebar-compact .chat-row{position:relative;justify-content:center;padding:6px 0;gap:0;min-height:62px;width:100%}
+  .sidebar-compact .chat-row-copy{display:none}
+  .sidebar-compact .compact-chat-badge{display:block;position:absolute;right:1px;top:3px}
+  .sidebar-compact .hidden-agents>summary{justify-content:center;padding:11px 3px;gap:6px}
+  .sidebar-compact .hidden-agents-label,.sidebar-compact [data-hidden-attention]{display:none}
+  .sidebar-compact .hidden-agents>summary>.icon{margin-left:0}
+  .sidebar-compact .hidden-agents>summary:has([data-hidden-attention]:not(:empty)){color:var(--warn)}
+  .sidebar-compact .sidebar-footer{padding:9px 8px 12px;align-items:center;gap:3px}
+  .sidebar-compact .worker-nav,.sidebar-compact .workspace-button{position:relative;width:48px;min-height:36px;justify-content:center;padding:6px}
+  .sidebar-compact .worker-nav>span:not([data-worker-badge]),.sidebar-compact .workspace-button>span{display:none}
+  .sidebar-compact .workspace-button>.icon{margin:0}
+  .sidebar-compact .worker-badge{position:absolute;right:0;top:0}
+  .sidebar-compact .preview-status{font-size:0;justify-content:center;padding:6px;gap:0;min-height:32px}
+  .sidebar-compact .preview-status>.small-icon{display:none}
+  .sidebar-compact .chat-list-empty{font-size:11px;text-align:center;padding:8px 0;overflow-wrap:anywhere}
+}
 
 /* ---- figures ---- */
 canvas.fig{display:block;max-width:100%}
