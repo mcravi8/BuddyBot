@@ -37,3 +37,10 @@ test('the switch preview lists every agent with its current and new model, says 
  const busy=providers.switchPreview(plan,id=>names[id],'switch');assert.match(busy,/data-provider-switch-cancel disabled>Cancel/);assert.match(busy,/data-provider-switch-confirm disabled>Switching…</);
  assert.match(providers.switchPreview({...plan,provider:'chatgpt',agents:[]},()=>'', ''),/Switch all agents to ChatGPT\?/);
 });
+test('moving the whole team points to the chosen starting provider while agents are still on the other one',()=>{
+ // 25 Oct: the user chose ChatGPT as the start, every agent kept its Claude model, and the offer pointed back to Claude.
+ assert.equal(providers.switchTarget({provider:'chatgpt'},['claude','claude','chatgpt']),'chatgpt');
+ assert.equal(providers.switchTarget({provider:'chatgpt'},['chatgpt','chatgpt']),'claude','once everyone is on it, the offer is the other provider');
+ const offer=providers.switchOffer({provider:'chatgpt'},'',['claude','claude','claude','claude','claude']);
+ assert.match(offer,/data-provider-switch="chatgpt"/);assert.match(offer,/5 of 5 agents still use Claude\./);assert.match(offer,/Switch all agents to ChatGPT/);
+});

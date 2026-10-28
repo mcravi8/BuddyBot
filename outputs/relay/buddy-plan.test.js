@@ -55,6 +55,31 @@ test('an authorized stage with no tasks yet reads as the supervisor planning it,
  assert.doesNotMatch(P.banner(later,pulse({}),names,NOW),/planning/,'a stage outside the authorization is not being planned');
 });
 
+test('a task the person paused reads as paused by them, waiting for them to resume it, never as with the supervisor or as needing them',()=>{
+ const one=active([task('t1','done'),task('t2','blocked',{assignee:'forge',blockedOn:'paused',workerTaskId:'w2',workerStatus:'paused'}),task('t3','pending')],{state:'paused'});
+ assert.equal(P.banner(one,pulse({}),names,NOW),'You paused “Task t2” (Forge) — resume it to finish Stage 1');
+ const two=active([task('t1','blocked',{blockedOn:'paused'}),task('t2','blocked',{assignee:'forge',blockedOn:'paused'}),task('t3','pending')],{state:'paused'});
+ assert.equal(P.banner(two,pulse({}),names,NOW),'You paused 2 tasks — resume them to finish Stage 1');
+ const html=P.stripHTML(one,pulse({}),names,{open:true,now:NOW});
+ assert.match(html,/class="plan-strip tone-idle open"/);assert.match(html,/data-plan-state="paused"/);assert.match(html,/Paused by you/);
+ assert.doesNotMatch(html,/With Chief|Needs you|See what needs you/);
+ // Beside other work the paused task keeps its own chip, and the strip says what is going on.
+ const beside=active([task('t1','dispatched',{workerTaskId:'w1'}),task('t2','blocked',{assignee:'forge',blockedOn:'paused'}),task('t3','pending')],{state:'working'});
+ assert.match(P.banner(beside,pulse({}),names,NOW),/^Working on Stage 1 of 3 — 0 of 3 tasks done — Lyra is working on “Task t1”/);
+ assert.equal(P.taskChip(task('t2','blocked',{blockedOn:'paused'}),pulse({}),'Chief').label,'Paused by you');
+});
+
+test('a plan whose supervisor lane stopped says Stuck and why, never that the supervisor is checking',()=>{
+ // 23 Oct: Stage 5 stuck on Buddy's task limit while the strip read "Chief is checking that Stage 5 is done".
+ const stuck=active([task('t1','done'),task('t2','done')],{state:'stuck',stuck:"The team is stuck on Stage 5 — S04a then S04b: Buddy could not apply Chief's add_tasks: At most 12 tasks can be added to one stage; stage 5 has 12. Tell me how to proceed."});
+ assert.equal(P.banner(stuck,pulse({}),names,NOW),"Stuck on Stage 5 — S04a then S04b: Buddy could not apply Chief's add_tasks: At most 12 tasks can be added to one stage; stage 5 has 12.");
+ assert.equal(P.tone(stuck),'needs','shown like something that needs attention');
+ const html=P.stripHTML(stuck,pulse({}),names,{open:true,now:NOW});
+ assert.match(html,/Stuck on Stage 5/);assert.doesNotMatch(html,/is checking/);
+ assert.equal(P.banner(active([task('t1','done')],{state:'stuck'}),pulse({}),names,NOW),"Stuck — Chief can't move this forward by itself",'without a reason it still says stuck');
+assert.equal(P.banner(active([task('t1','done')],{state:'stuck',stuck:'Chief is stuck on “Export the DOC”. Say how to go on.'}),pulse({}),names,NOW),'Stuck on “Export the DOC”.','the newer wording reads the same way');
+});
+
 test('stage and task chips say where each piece of work stands',()=>{
  assert.deepEqual(['proposed','approved','working','review','done'].map(s=>P.stageChip({status:s}).label),['Not started','Up next','Working','Being checked','Done']);
  const chip=(t,p)=>P.taskChip(t,pulse(p||{}),'Chief').label;
@@ -63,6 +88,12 @@ test('stage and task chips say where each piece of work stands',()=>{
  assert.equal(chip(task('a','dispatched',{workerTaskId:'w'}),{lyra:{state:'retrying',taskId:'w'}}),'Retrying');
  assert.equal(chip(task('a','dispatched',{workerTaskId:'w'}),{lyra:{state:'with_supervisor',taskId:'w'}}),'Asking Chief');
  assert.equal(chip(task('a','dispatched',{workerTaskId:'w'}),{lyra:{state:'working',taskId:'other'}}),'Queued','the agent is busy with another task');
+ // The task's own run decides first (23 Oct: Forge's C1 ran on RunPod while the Plan said "Queued").
+ const remote=task('a','dispatched',{workerTaskId:'w',workerStatus:'paused',workerBlockedBy:'remote'});
+ assert.equal(chip(remote),'Running remotely','its command runs on a rented machine');
+ assert.equal(chip(remote,{lyra:{state:'queued',taskId:'w'}}),'Running remotely','whatever the agent pulse says');
+ assert.equal(chip(task('a','dispatched',{workerTaskId:'w',workerStatus:'running'}),{lyra:{state:'queued',taskId:'w'}}),'Working','a task that runs is not queued');
+ assert.equal(chip(task('a','dispatched',{workerTaskId:'w',workerStatus:'queued'})),'Queued','one waiting its turn still is');
  assert.equal(chip(task('a','blocked',{blockedOn:'user'})),'Needs you');assert.equal(chip(task('a','blocked',{blockedOn:'supervisor'})),'With Chief');
 });
 
@@ -160,4 +191,88 @@ test('a stage report goes to the group chat with that stage’s files attached; 
  assert.deepEqual(out[2].message.files.map(f=>f.path),['stage2.md'],'a report without its stage reference is read by the stage it names');
  assert.equal(out[1].message.noticeKind,'stage_report');
  assert.deepEqual(P.noticeFiles(state,p,p.notices[1]).map(f=>f.path),['figures/fig1.png','paper_draft.md','notes/sources.md'],'the same files for a report delivered before, read when it is drawn');
+});
+
+test('the plan strip names every teammate working at once, and each of their tasks reads Working',()=>{
+ const tasks=[task('t1','dispatched',{workerTaskId:'w1',workerStatus:'running'}),task('t2','dispatched',{assignee:'forge',workerTaskId:'w2',workerStatus:'running',updatedAt:'2026-10-19T10:18:00Z'}),task('t3','dispatched',{assignee:'chief',workerTaskId:'w3',workerStatus:'queued'})];
+ const p=active(tasks,{state:'working'});
+ const both=pulse({lyra:{state:'working',taskId:'w1'},forge:{state:'quiet',taskId:'w2'},chief:{state:'queued',taskId:'w3'}});
+ assert.equal(P.banner(p,both,names,NOW),'Working on Stage 1 of 3 — 0 of 3 tasks done — Lyra is working on “Task t1” (30 min), Forge on “Task t2” (12 min), plus 1 more');
+ assert.deepEqual(tasks.map(t=>P.taskChip(t,both).label),['Working','Working','Queued'],'each running task reads Working, the one waiting its turn Queued');
+ assert.match(P.stripHTML(p,both,names,{now:NOW}),/Lyra is working on “Task t1” \(30 min\), Forge on “Task t2” \(12 min\)/);
+ // With one at work it reads as it always did.
+ assert.equal(P.banner(p,pulse({lyra:{state:'working',taskId:'w1'}}),names,NOW),'Working on Stage 1 of 3 — 0 of 3 tasks done — Lyra is working on “Task t1” (30 min), plus 2 more');
+});
+
+test('plan notices read as short chat messages: a stage report in a line with the rest under Details, a decision with its suggestion, a stuck notice and an authorization as one line',()=>{
+ const report='Acceptance: S01 PASS, independently signed off by Vera.\nOutputs: stages/S01_protocol/ contains spec_v1.sha256 and acceptance.md.\nDecision: Preserve frozen protocols because the rendering input is unchanged.\nIssues: No remaining S01 blockers.';
+ const holding=plan('holding',{state:'stage_done'},{scope:{...scope,status:'achieved'},stages:[stage(1,'done',[task('t1','done')]),stage(2,'proposed'),stage(3,'proposed')],
+  notices:[{id:'r1',kind:'stage_report',text:report+'\n\nNext is Stage 2 — Build: Goal of stage 2. Say “get stage 2 done”, or tell me what to change.',chat:true,status:'open',refs:{stageId:'s1'}},
+   {id:'e1',kind:'escalation',text:'Approve the recommended suspension? My recommendation: Suspend S02a recovery until runtime access is back. The team keeps working on the rest meanwhile.',chat:true,status:'open',refs:{question:'Approve the recommended suspension?',recommendation:'Suspend S02a recovery until runtime access is back',category:'objective'}},
+   {id:'a1',kind:'authorized',text:'Stage 2 authorized. The team is working on Stage 2 — Build. I\'ll report when it\'s done. I\'ll only interrupt you for sign-ins.',chat:true,status:'open'}]});
+ const msg=n=>({id:'plan-notice-'+n.id,planNotice:true,planId:'p1',noticeKind:n.kind,body:n.text,whoName:'Chief'});
+ assert.deepEqual(P.splitReport(holding.notices[0].text).rows.map(r=>r.label),['Acceptance','Outputs','Decision','Issues'],'labelled lines become rows, without the line about what comes next');
+ assert.equal(P.splitReport('Stage 1 — Research is done.').prose,'Stage 1 — Research is done.','a report in prose stays prose');
+ const card=P.noticeCard(holding,msg(holding.notices[0]));
+ assert.equal(card.label,'Stage report');
+ assert.match(card.html,/<p class="plan-card-line"><strong>Stage 1 is done<\/strong> · S01 PASS, independently signed off by Vera\.<\/p>/,'one line: which stage, and the point');
+ const [line1,folded]=card.html.split('<details class="plan-card-more">');
+ assert.doesNotMatch(line1,/Done when|<dt>|Criterion 1a/,'nothing else is in view');
+ assert.match(folded,/^<summary>Details<\/summary>/);assert.match(folded,/<dt>Issues<\/dt><dd>No remaining S01 blockers.<\/dd>/);assert.match(folded,/<dt>Outputs<\/dt>/);
+ assert.match(folded,/Done when[\s\S]*class="met"><svg[^>]*>.*?<\/svg><span>Criterion 1a<\/span>/,'its stage’s criteria, met, are a click away');
+ assert.match(card.html,/data-plan-authorize="2"[^>]*>Get stage 2 done</,'the next stage is the person’s choice, on the card');
+ assert.doesNotMatch(card.html,/Next is Stage 2/,'the plan’s sentence about what comes next is the footer, not part of the report');
+ const started={...holding,status:'active',scope:{...scope,through:2},stages:[stage(1,'done'),stage(2,'working'),stage(3,'proposed')]};
+ assert.match(P.noticeCard(started,msg(holding.notices[0])).html,/Stage 2 started/,'once chosen, the card says so instead of asking again');
+ assert.doesNotMatch(P.noticeCard(started,msg(holding.notices[0])).html,/data-plan-authorize/);
+ const decision=P.noticeCard(holding,msg(holding.notices[1]));
+ assert.match(decision.html,/<p class="plan-card-line"><span class="plan-card-badge">Needs you · a change to the plan<\/span> <strong>Approve the recommended suspension\?<\/strong><\/p>/);
+ assert.match(decision.html,/<p class="plan-card-suggest">Chief suggests: Suspend S02a recovery until runtime access is back<\/p>/);
+ assert.match(decision.html,/data-plan-answer="approve" data-notice="e1"/);
+ assert.doesNotMatch(decision.html,/plan-card-context/,'a question alone has nothing under it');
+ // A question that opened with the state of the work: the question is the heading, what led to it reads under it, folded once it is long.
+ const ask='Stage 5 remains PARTIAL. Vera verified all five numerical tables without displayed-value mismatches, but that is not full report acceptance. The original S04a draft was assembled before its required freeze; the later repair freeze cannot establish original compliance. May we accept this historical timing exception, explicitly documented, while retaining every other outstanding requirement? This does not authorize S05 or submission.';
+ assert.deepEqual(P.askParts(ask),{ask:'May we accept this historical timing exception, explicitly documented, while retaining every other outstanding requirement?',context:'Stage 5 remains PARTIAL. Vera verified all five numerical tables without displayed-value mismatches, but that is not full report acceptance. The original S04a draft was assembled before its required freeze; the later repair freeze cannot establish original compliance. This does not authorize S05 or submission.'});
+ const long=P.noticeCard({...holding,notices:[{id:'e2',kind:'escalation',text:ask,chat:true,status:'open',refs:{question:ask,recommendation:'Approve the exception',category:'objective'}}]},{id:'plan-notice-e2',planNotice:true,planId:'p1',noticeKind:'escalation',body:ask,whoName:'Chief'});
+ assert.match(long.html,/<strong>May we accept this historical timing exception, explicitly documented, while retaining every other outstanding requirement\?<\/strong><\/p>/);
+ assert.match(long.html,/<details class="plan-card-more"><summary>Details<\/summary><p class="plan-card-context">Stage 5 remains PARTIAL\./,'what led to it is a click away');
+ const asked=P.askParts('Please provide the student ID to use on the report cover. The revised draft is saved.');
+ assert.deepEqual(asked,{ask:'Please provide the student ID to use on the report cover.',context:'The revised draft is saved.'},'with no question mark, the first sentence is what is asked');
+ assert.deepEqual(P.askParts('The maximum spread is 0.019246, not 0.01. Approve?'),{ask:'Approve?',context:'The maximum spread is 0.019246, not 0.01.'},'a number is not the end of a sentence');
+ const answered={...holding,notices:holding.notices.map(n=>n.id==='e1'?{...n,status:'answered',refs:{...n.refs,answer:'Approved. Go ahead.'}}:n)};
+ assert.deepEqual(P.noticeCard(answered,msg(holding.notices[1])),{hidden:true},'answered, the question leaves the chat');
+ assert.match(P.noticeCard(holding,msg(holding.notices[1]),{reply:{open:true,draft:'Wait until Monday'}}).html,/<textarea[^>]*>Wait until Monday<\/textarea>/,'a reply being written is kept');
+ const line=P.noticeCard(holding,msg(holding.notices[2]));
+ assert.equal(line.line,true);assert.equal(line.html,'<strong>Stage 2 authorized</strong><span> · working on Stage 2 — Build</span>');
+ // Stuck is one plain line too: the reason without the stage's long title, cut to its first sentence (the whole reason on hover), and a way
+ // to tell Chief.
+ const stuckText='The team is stuck on Stage 5 — S04a then separately triggered S04b: Word draft and user review: Chief tried to add tasks, but Buddy refused: At most 12 tasks can be added to one stage; stage 5 has 12. Tell me how to proceed.';
+ const stuckPlan={...holding,stages:[...holding.stages,{...stage(3,'working'),id:'s5',n:5,title:'S04a then separately triggered S04b: Word draft and user review'}]};
+ const stuck=P.noticeCard(stuckPlan,{id:'plan-notice-s1',planNotice:true,planId:'p1',noticeKind:'stuck',body:stuckText,whoName:'Chief'});
+ assert.equal(stuck.line,true);assert.match(stuck.html,/^<strong class="plan-stuck-mark">Stuck<\/strong><span> · Chief tried to add tasks, but Buddy refused: At most 12 tasks can be added to one stage; stage 5 has 12\.<\/span> <button type="button" class="small-link" data-plan-answer="chat">Tell Chief<\/button>$/);
+ assert.doesNotMatch(stuck.html,/S04a|Tell me how to proceed/);
+ // Since 27 Oct the notice names who is stuck and on what, and the reason goes to Chief: the line keeps what it is stuck on.
+ const named=P.noticeCard(stuckPlan,{id:'plan-notice-s2',planNotice:true,planId:'p1',noticeKind:'stuck',body:'Chief is stuck on “Export the DOC”. Say how to go on.',whoName:'Chief'});
+ assert.match(named.html,/<span> · “Export the DOC”\.<\/span> <button type="button" class="small-link" data-plan-answer="chat">Tell Chief<\/button>$/);
+ assert.doesNotMatch(named.html,/Say how to go on|is stuck on/);
+ const looped=P.noticeCard(stuckPlan,{id:'plan-notice-s3',planNotice:true,planId:'p1',noticeKind:'stuck',body:"Chief is stuck on “Export the DOC”: its last 3 decisions didn't move the work. Say how to go on.",whoName:'Chief'});
+ assert.match(looped.html,/<span> · “Export the DOC”: its last 3 decisions didn&#39;t move the work\.<\/span>|<span> · “Export the DOC”: its last 3 decisions didn't move the work\.<\/span>/);
+ assert.equal(P.noticeCard(null,msg(holding.notices[0])),null,'a notice whose plan is not known stays a plain message');
+ assert.equal(P.noticeCard(holding,{...msg(holding.notices[0]),noticeKind:'proposal'}),null);
+});
+
+test('a question waiting for the person is answered from the plan view in one step: the button opens the team chat at its card',()=>{
+ const asking=active([task('t1','done'),task('t2','pending'),task('t3','pending')],{state:'needs_you',needsYou:1},
+  {notices:[{id:'N1',kind:'escalation',status:'open',text:'May we change the November 12 restriction? My recommendation: approve.',chat:true,refs:{question:'May we change the November 12 restriction?'}}]});
+ const html=P.stripHTML(asking,pulse({}),names,{open:true,now:NOW});
+ assert.match(html,/<button type="button" class="small-link plan-needs" data-action="chat" data-id="team" data-plan-notice-open="N1">Answer in chat<\/button>/);
+ assert.doesNotMatch(html,/data-activity-open/);
+ // Waiting for the person without a question card (a task held for them) still lists what needs them.
+ const held=active([task('t1','blocked',{blockedOn:'user'}),task('t2','pending'),task('t3','pending')],{state:'needs_you',needsYou:1});
+ assert.match(P.stripHTML(held,pulse({}),names,{open:true,now:NOW}),/data-activity-open>See what needs you/);
+});
+test('a long reason or report opens with its first sentence, as plain text, never cut inside a word',()=>{
+ assert.deepEqual(P.firstLine('Stage 3 is **done**. The [report](<file:///x/r.md>) is saved.'),{first:'Stage 3 is done.',more:true});
+ assert.deepEqual(P.firstLine('Short.'),{first:'Short.',more:false});
+ const cut=P.firstLine('word '.repeat(80),60);assert.ok(cut.first.endsWith('…')&&!/wor…$/.test(cut.first)&&cut.first.length<=60&&cut.more);
 });

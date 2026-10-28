@@ -4,13 +4,14 @@ import AppKit
 @MainActor final class BuddyApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandlerWithReply {
     private var window: NSWindow?
     private var webView: WKWebView?
+    private var titleObservers: [NSObjectProtocol] = []
     private let filePreviews = BuddyFilePreview()
     private let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Buddy", isDirectory: true)
     private var stateURL: URL { supportURL.appendingPathComponent("workspace.json") }
     private static let appearanceKey = "BuddyAppearance"
     // The page colour of the light and dark themes, so the window never flashes the wrong one while the page loads.
     private static let pageBackground = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 18 / 255, green: 18 / 255, blue: 17 / 255, alpha: 1) : NSColor(srgbRed: 251 / 255, green: 250 / 255, blue: 248 / 255, alpha: 1)
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 18 / 255, green: 18 / 255, blue: 17 / 255, alpha: 1) : NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
     }
     /// WKWebView keeps the colour it was given as it resolved at that moment, so resolve it again for the current appearance.
     private static func resolvedPageBackground() -> NSColor {
@@ -31,6 +32,12 @@ import AppKit
     private lazy var ai = BuddyAIRouter(support: supportURL, chatgpt: conversations)
     private lazy var agentSetup = BuddyAgentSetup(support:supportURL)
     private lazy var teamwork = BuddyTeamService(conversations: ai)
+    /// An agent that finishes or needs the person while Buddy is in the background appears at the top-left of the screen (BuddyDesktopDrop.swift).
+    private lazy var desktopDrop: BuddyDesktopDrop = {
+        let drop = BuddyDesktopDrop(web: Bundle.main.resourceURL?.appendingPathComponent("Web", isDirectory: true))
+        drop.onOpen = { [weak self] chat in self?.openChat(chat) }
+        return drop
+    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyAppearance(UserDefaults.standard.string(forKey: Self.appearanceKey) ?? "light")
@@ -52,6 +59,8 @@ import AppKit
                 return (agent["tools"] as? [String: Bool])?["projectFiles"] != false
             }
         }
+        // A chat agent named a place on the Mac the person hasn't opened to agents yet: the page shows the card at once.
+        conversations.onAccessRequest = { [weak self] _, _ in self?.deliver(["type": "folder-access"]) }
         conversations.computerPermission = { [weak self] workspace, keys in
             guard let self,!FileManager.default.fileExists(atPath:self.supportURL.appendingPathComponent("Worker/PrivateSignIn.json").path) else{return false}
             guard let state = try? self.workspaceState(), state["conversationWorkspace"] as? String == workspace, let agents = state["agents"] as? [[String: Any]], !keys.isEmpty else { return false }
@@ -61,7 +70,7 @@ import AppKit
             }
         }
         conversations.extraToolHandler = { [weak self] tool, args, context in
-            guard let self, ["buddy_start_background_task","buddy_computer_task","buddy_manage_routine","buddy_coding_session","buddy_team","buddy_agent_settings","buddy_agent_rules","buddy_plan"].contains(tool), let id = context["agentId"] as? String else { throw BuddyWorkerFailure(message: "Background work is unavailable for this turn.") }
+            guard let self, ["buddy_start_background_task","buddy_computer_task","buddy_manage_routine","buddy_coding_session","buddy_team","buddy_agent_settings","buddy_agent_rules","buddy_plan","buddy_resolve_waiting"].contains(tool), let id = context["agentId"] as? String else { throw BuddyWorkerFailure(message: "Background work is unavailable for this turn.") }
             let workspace = try self.workspaceContext()
             guard workspace.agents.contains(id) else { throw BuddyWorkerFailure(message: "This agent is no longer available.") }
             _ = try await BuddyWorkerClient.start(support: self.supportURL, workspace: workspace.workspace)
@@ -71,6 +80,8 @@ import AppKit
                 return result
             }
             if tool=="buddy_team" {return try await BuddyWorkerClient.call(support:self.supportURL,payload:["operation":"team","workspace":workspace.workspace,"actorId":id,"authorizedText":context["authorizedUserText"] ?? "","arguments":args])}
+            // The user supplied what a waiting task asked for: the agent hands it over, as itself, with the user's message of this turn.
+            if tool=="buddy_resolve_waiting" {return try await BuddyWorkerClient.call(support:self.supportURL,payload:BuddyWorkerClient.resolveWaitingRequest(arguments:args,context:context,workspace:workspace.workspace))}
             if tool=="buddy_plan" {
                 // The agent acts as itself; the worker checks what it may do, and an authorization against the person's words in this turn.
                 let state=try self.workspaceState()
@@ -80,7 +91,10 @@ import AppKit
                 let replyRun=(context["replyRunId"] as? String).flatMap{$0.isEmpty ? nil:$0} ?? (context["proposalScope"] as? BuddyProposalScope)?.replyRunId ?? context["runId"] as? String ?? ""
                 var request:[String:Any]=["operation":"plan","workspace":workspace.workspace,"actorId":id,"authorizedText":context["authorizedUserText"] ?? "","requestId":(context["runId"] as? String ?? "")+":"+(context["callId"] as? String ?? ""),"arguments":arguments]
                 if let message=((state["runs"] as? [String:[String:Any]])?[replyRun])?["userId"] as? String {request["messageId"]=message}
-                return try await BuddyWorkerClient.call(support:self.supportURL,payload:request)
+                let result=try await BuddyWorkerClient.call(support:self.supportURL,payload:request)
+                // The request went into the team plan: in a group reply the teammates get it there, as plan tasks, not as turns in this reply.
+                if result["code"]==nil,result["error"]==nil,BuddyTeamService.takesWork(arguments) {self.teamwork.tookIntoPlan(replyRun)}
+                return result
             }
             if tool=="buddy_computer_task" {
                 // The person's message in this turn goes with it: the worker pins the account they named for the task, and only their words change it.
@@ -125,13 +139,21 @@ import AppKit
             let note=self.planTurnNotes.removeValue(forKey:id).flatMap{note in self.teamwork.snapshots().contains(where:{$0["runId"] as? String==note.run && ["starting","answering","stopping"].contains($0["status"] as? String ?? "")}) ? note.text:nil} ?? ""
             text+=self.planInstructions(plans:BuddyPlanStore.readOnlySummary(support:self.supportURL,workspace:workspace),agent:id,state:s,note:note)
             return text}
+        // Around each turn of a group round: a member's latest direct chat; for the coordinator, the team's current state.
+        teamwork.groupContext={ [weak self] workspace,group,agent in
+            guard let self,let s=try? self.workspaceState(),s["conversationWorkspace"] as? String==workspace else{return ""}
+            if let agent {return BuddyLiveState.elsewhere(state:s,agent:agent,chat:group)}
+            return BuddyLiveState.coordinator(plans:BuddyPlanStore.readOnlySummary(support:self.supportURL,workspace:workspace),jobs:self.liveJobs(),state:s,group:group)}
         Task {if let context=try? workspaceContext(){_ = try? await BuddyWorkerClient.start(support:supportURL,workspace:context.workspace)}}
     }
 
     private func showWindow() {
         if let window { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        // Edge to edge: no title bar strip. The page reaches the top of the window and the window buttons sit over the sidebar; the page
+        // keeps its controls below the strip the buttons occupy (--titlebar-inset), and that strip drags the window (BuddyTitleStrip).
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Buddy"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = Self.pageBackground
         window.minSize = NSSize(width: 760, height: 660)
@@ -144,6 +166,8 @@ import AppKit
         let controller = WKUserContentController()
         controller.addScriptMessageHandler(self, contentWorld: .page, name: "buddy")
         installBridge(on: controller)
+        let inset = max(0, window.frame.height - window.contentLayoutRect.height)
+        controller.addUserScript(WKUserScript(source: "document.documentElement.classList.add('buddy-native-window');document.documentElement.style.setProperty('--titlebar-inset','\(Int(inset.rounded()))px')", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = controller
         configuration.websiteDataStore = .default()
@@ -152,7 +176,23 @@ import AppKit
         webView.uiDelegate = self
         webView.autoresizingMask = [.width, .height]
         webView.underPageBackgroundColor = Self.resolvedPageBackground()
-        window.contentView = webView
+        let root = NSView(frame: NSRect(origin: .zero, size: window.frame.size))
+        root.autoresizesSubviews = true
+        webView.frame = root.bounds
+        root.addSubview(webView)
+        let strip = BuddyTitleStrip(frame: NSRect(x: 0, y: root.bounds.height - inset, width: root.bounds.width, height: inset))
+        strip.autoresizingMask = [.width, .minYMargin]
+        root.addSubview(strip)
+        window.contentView = root
+        // Full screen has no window buttons: the page uses the whole height and nothing drags.
+        let fullScreen = { [weak webView, weak strip] (on: Bool) in
+            strip?.isHidden = on
+            webView?.evaluateJavaScript("document.documentElement.style.setProperty('--titlebar-inset','\(on ? 0 : Int(inset.rounded()))px')")
+        }
+        titleObservers = [
+            NotificationCenter.default.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) { _ in fullScreen(true) },
+            NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in fullScreen(false) },
+        ]
         self.webView = webView
         guard let resources = Bundle.main.resourceURL?.appendingPathComponent("Web", isDirectory: true) else { showFailure("Buddy’s interface is missing."); return }
         let entry = resources.appendingPathComponent("index.html")
@@ -206,9 +246,11 @@ import AppKit
           addProjectFolder: () => window.webkit.messageHandlers.buddy.postMessage({kind: 'addProjectFolder'}),
           disconnectProjectFolder: folderId => window.webkit.messageHandlers.buddy.postMessage({kind: 'disconnectProjectFolder', folderId}),
           showProjectFolder: folderId => window.webkit.messageHandlers.buddy.postMessage({kind: 'showProjectFolder', folderId: folderId || null}),
+          folderAccess: payload => window.webkit.messageHandlers.buddy.postMessage({kind: 'folderAccess', payload}),
           computerStatus: () => window.webkit.messageHandlers.buddy.postMessage({kind: 'computerStatus'}),
           setComputerAccess: enabled => window.webkit.messageHandlers.buddy.postMessage({kind: 'setComputerAccess', enabled}),
-          openChatGPT: () => window.webkit.messageHandlers.buddy.postMessage({kind: 'openChatGPT'})
+          openChatGPT: () => window.webkit.messageHandlers.buddy.postMessage({kind: 'openChatGPT'}),
+          drop: payload => window.webkit.messageHandlers.buddy.postMessage({kind: 'desktopDrop', payload})
         });
         """
         controller.addUserScript(WKUserScript(source: bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -243,15 +285,22 @@ import AppKit
             return (through, "")
         } catch { return (nil, error.localizedDescription) }
     }
-    /// What one agent's chat turn is told about the plans it works in, and what the app did with the person's stage request, as text to append.
-    private func planInstructions(plans: [[String: Any]], agent: String, state: [String: Any], note: String) -> String {
-        let names = BuddyPlanChat.names(state: state), plan = BuddyPlanChat.context(plans: plans, agent: agent, names: names, members: BuddyPlanChat.members(state: state))
+    /// Tells the worker the user wrote in a chat (a group, or an agent directly), so work stuck in that chat's plans is looked at again.
+    func noteUserWrote(workspace:String,chat:String,text:String) {
+        Task { _ = try? await BuddyWorkerClient.call(support:self.supportURL,payload:["operation":"userWrote","workspace":workspace,"chat":chat,"text":String(text.prefix(4000))]) }
+    }
+    /// The worker's task records, read-only, as a chat turn reads them.
+    private func liveJobs() -> [[String: Any]] { ((try? BuddyOperationsDB.snapshot(directory: supportURL.appendingPathComponent("Worker"))) ?? nil)?.tasks ?? [] }
+    /// What one agent's chat turn is told about the plans it works in, the work running now and the waits solved lately (the same block in its
+    /// direct chat and in a group), and what the app did with the person's stage request, as text to append. In its direct chat (`direct`) it
+    /// also gets the latest exchange of the groups it is in; a group turn gets its latest direct chat through the team service.
+    private func planInstructions(plans: [[String: Any]], agent: String, state: [String: Any], note: String, direct: Bool = false) -> String {
         // What is running right now, read-only from the worker's records, so "how is it going?" is answered from the live session, not guessed.
         let workspace = state["conversationWorkspace"] as? String ?? ""
-        let jobs = ((try? BuddyOperationsDB.snapshot(directory: supportURL.appendingPathComponent("Worker"))) ?? nil)?.tasks ?? []
         let supervises = BuddyAutonomy.supervisor(support: supportURL, workspace: workspace, state: state, agent: agent)?.id == agent
-        let live = BuddyLiveWork.context(jobs: jobs, workspace: workspace, agent: agent, supervises: supervises, names: names)
-        return (plan.isEmpty ? "" : "\n" + plan) + (live.isEmpty ? "" : "\n" + live) + (note.isEmpty ? "" : "\n" + note)
+        let block = BuddyLiveState.block(plans: plans, jobs: liveJobs(), state: state, agent: agent, supervises: supervises)
+        let elsewhere = direct ? BuddyLiveState.elsewhere(state: state, agent: agent, chat: agent) : ""
+        return (block.isEmpty ? "" : "\n" + block) + (elsewhere.isEmpty ? "" : "\n" + elsewhere) + (note.isEmpty ? "" : "\n" + note)
     }
     private var adopting = false
     /// Role and instructions are kept in the agent’s saved profile, so the app itself carries a change to them there, then confirms it to the worker.
@@ -275,6 +324,14 @@ import AppKit
         guard let task = result["task"] as? [String: Any], let id = task["id"] as? String, let account = task["account"] as? String, !account.isEmpty else { return }
         let replyRun = (context["replyRunId"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (context["proposalScope"] as? BuddyProposalScope)?.replyRunId ?? context["runId"] as? String ?? ""
         deliver(["type": "task", "runId": replyRun, "task": ["id": id, "title": task["title"] ?? "", "account": account, "agentId": task["agentId"] ?? actor], "delegatedBy": actor])
+    }
+    /// A holder of the desktop drop was clicked: Buddy comes to the front on that agent's or team's chat.
+    private func openChat(_ chat: String) {
+        if NSApp.isHidden { NSApp.unhide(nil) }
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+        showWindow()
+        guard let data = try? JSONSerialization.data(withJSONObject: [chat]), let json = String(data: data, encoding: .utf8) else { return }
+        webView?.evaluateJavaScript("window.BuddyDrop?.open(\(json)[0])", completionHandler: nil)
     }
     private func deliver(_ event: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: event), let json = String(data: data, encoding: .utf8) else { return }
@@ -406,6 +463,8 @@ import AppKit
             Task { do {
                 let workspace = try workspaceContext().workspace, payload = body["payload"] as? [String: Any] ?? [:]
                 if !(payload["taskId"] as? String ?? "").isEmpty { _ = try? await BuddyWorkerClient.start(support: supportURL, workspace: workspace) }
+                // Connected services (Settings, or the chat's card when an agent asked for one): their address, choices and key.
+                if BuddyServiceBox.handles(payload) { replyHandler(try await BuddyServiceBox.handle(payload, workspace: workspace, support: supportURL), nil); return }
                 replyHandler(try await BuddySignInBox.handle(payload, workspace: workspace, support: supportURL), nil)
             } catch { replyHandler(nil, error.localizedDescription) } }
         case "sendMessage":
@@ -431,6 +490,7 @@ import AppKit
                         throw BuddyFailure(message:"\(names) \(notReady.count>1 ? "haven't":"hasn't") finished setup. Choose “Use their instructions” above the message box, or answer their first question in their own chat.")
                     }
                     request.fileScope = try conversations.projectFiles.scope(request.workspace)
+                    noteUserWrote(workspace:request.workspace,chat:request.groupId,text:request.text)
                     guard let stages else { replyHandler(try teamwork.send(request), nil); return }
                     let ready=request
                     Task {
@@ -467,13 +527,14 @@ import AppKit
                 if let currentAgent {routed["agent"]=["name":currentAgent["name"] ?? "Buddy","role":currentAgent["role"] ?? "","description":currentAgent["description"] ?? ""]}
                 // "get stage 1 done" to the plan's supervisor is recorded by the app itself; the turn then hears that it was (or why not).
                 let state=try workspaceState(), plans=BuddyPlanStore.readOnlySummary(support:supportURL,workspace:context.workspace)
+                noteUserWrote(workspace:context.workspace,chat:agent,text:options.authorizedUserText)
                 let stages=BuddyPlanChat.intercept(scope:BuddyPlanIntent.scope(options.authorizedUserText).map{($0.through,$0.remainder)},plans:plans,chat:agent,agent:agent,isGroup:false)
-                guard let stages else { options.instructions+=planInstructions(plans:plans,agent:agent,state:state,note:""); replyHandler(try ai.send(routed, options: options), nil); return }
+                guard let stages else { options.instructions+=planInstructions(plans:plans,agent:agent,state:state,note:"",direct:true); replyHandler(try ai.send(routed, options: options), nil); return }
                 let base=options, message=routed
                 Task {
                     let outcome=await self.authorizeStages(stages,workspace:context.workspace,text:base.authorizedUserText,runId:payload["runId"] as? String ?? "",state:state)
                     var turn=base
-                    turn.instructions+=self.planInstructions(plans:BuddyPlanStore.readOnlySummary(support:self.supportURL,workspace:context.workspace),agent:agent,state:state,note:outcome.through.map{BuddyPlanChat.authorizedNote(through:$0,supervisor:true)} ?? BuddyPlanChat.authorizeFailed(outcome.error))
+                    turn.instructions+=self.planInstructions(plans:BuddyPlanStore.readOnlySummary(support:self.supportURL,workspace:context.workspace),agent:agent,state:state,note:outcome.through.map{BuddyPlanChat.authorizedNote(through:$0,supervisor:true)} ?? BuddyPlanChat.authorizeFailed(outcome.error),direct:true)
                     do { replyHandler(try self.ai.send(message, options: turn), nil) } catch { replyHandler(nil, error.localizedDescription) }
                 }
             } catch { replyHandler(nil, error.localizedDescription) }
@@ -577,6 +638,31 @@ import AppKit
                 replyHandler(["disconnected": true], nil)
                 deliver(["type": "project-files-changed"])
             } catch { replyHandler(nil, error.localizedDescription) } }
+        case "folderAccess":
+            // The person's own answers about places on the Mac: a card's Allow, Don't allow or whole home folder, and Settings. Only this page
+            // reaches it (agents have no way to), and every answer is saved as the person's.
+            Task { do {
+                let context = try workspaceContext(), payload = body["payload"] as? [String: Any] ?? [:], files = conversations.projectFiles, action = payload["action"] as? String ?? "list"
+                if action == "list" { replyHandler(try files.accessOverview(context.workspace), nil); return }
+                var result: [String: Any]
+                if action == "answer" {
+                    guard let id = payload["id"] as? String, let choice = payload["choice"] as? String else { throw BuddyFailure(message: "Choose Allow or Don’t allow.") }
+                    result = try files.answerAccess(context.workspace, id: id, choice: choice, actor: "you")
+                } else {
+                    result = try files.changeAccess(context.workspace, action: action, path: payload["path"] as? String, actor: "you")
+                    if action == "removeHome" { await teamwork.stopFiles(workspace: context.workspace); await ai.stopFiles(workspace: context.workspace) }
+                }
+                // Background and coding tasks that waited go on by themselves; a chat agent's follow-up turn is started by the page, which holds the chat.
+                let tasks = Array(Set((result["waiting"] as? [[String: Any]] ?? []).filter { !($0["taskId"] as? String ?? "").isEmpty }.compactMap { $0["requestId"] as? String }))
+                if !tasks.isEmpty {
+                    do {
+                        _ = try await BuddyWorkerClient.start(support: supportURL, workspace: context.workspace)
+                        result["resumed"] = try await BuddyWorkerClient.call(support: supportURL, payload: ["operation": "folderAccess", "workspace": context.workspace, "arguments": ["requestIds": tasks]])["resumed"] ?? []
+                    } catch { result["resumeError"] = error.localizedDescription }
+                }
+                replyHandler(result, nil)
+                deliver(["type": "project-files-changed"])
+            } catch { replyHandler(nil, error.localizedDescription) } }
         case "showProjectFolder":
             do { let context = try workspaceContext(); let scope = try (body["folderId"] as? String).map { BuddyFileScope(workspace: context.workspace, folderId: $0) } ?? conversations.projectFiles.scope(context.workspace); NSWorkspace.shared.open(try conversations.projectFiles.location(scope)); replyHandler(["opened": true], nil) }
             catch { replyHandler(nil, error.localizedDescription) }
@@ -588,6 +674,18 @@ import AppKit
         case "openChatGPT":
             NSWorkspace.shared.open(URL(string: "https://chatgpt.com")!)
             replyHandler(["opened": true], nil)
+        case "desktopDrop":
+            // Only Buddy's own window asks for a drop; the drop's panel has a page of its own, with no way to this bridge. The app shows it
+            // only while Buddy is in the background, for an agent and a chat of this workspace.
+            guard BuddyDrop.accepts(sender: message.webView, main: webView, isMainFrame: message.frameInfo.isMainFrame, page: message.frameInfo.request.url,
+                                    entry: Bundle.main.resourceURL?.appendingPathComponent("Web/index.html")) else { replyHandler(nil, "Unsupported request."); return }
+            let payload = body["payload"] as? [String: Any] ?? [:]
+            if payload["clear"] as? Bool == true { desktopDrop.clear(); replyHandler(["cleared": true], nil); return }
+            let state = try? workspaceState()
+            let agents = Set((state?["agents"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String })
+            let chats = agents.union((state?["groups"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String })
+            guard let item = BuddyDrop.item(payload, agents: agents, chats: chats) else { replyHandler(nil, "Unsupported drop."); return }
+            replyHandler(["shown": desktopDrop.show(item)], nil)
         case "saveState":
             guard let value = body["value"] as? String, let data = value.data(using: .utf8), data.count < 50_000_000,
                   let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any], state["agents"] is [Any], state["version"] as? Int == 1 else { replyHandler(nil, "Invalid workspace."); return }
@@ -714,5 +812,24 @@ MainActor.assumeIsolated {
     } else {
         let delegate = BuddyApp(); app.setActivationPolicy(.regular); app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
+    }
+}
+
+/// The strip along the top of the edge-to-edge window, where a title bar used to be: dragging it moves the window and a double click does what
+/// the person chose in System Settings (zoom by default, minimise, or nothing). The window buttons sit above it and keep their own clicks.
+final class BuddyTitleStrip: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        if event.clickCount == 2 {
+            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+            case "Minimize": window.miniaturize(nil)
+            case "None": break
+            default: window.zoom(nil)
+            }
+            return
+        }
+        window.performDrag(with: event)
     }
 }

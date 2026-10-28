@@ -1,11 +1,15 @@
 /* Frontend configuration and preview proposals. Live suggestions and approval are enforced by Buddy’s native bridge. */
 'use strict';
 const RelayTeam = (() => {
+  // The fold figures' seven shapes (buddy-fold-figure.js). "sphere" is the circle's saved id from before them, so saved agents keep their shape.
   const shapeOptions = [
-    {id:'diamond',name:'Diamond'},
-    {id:'sphere',name:'Sphere'},
+    {id:'square',name:'Square'},
+    {id:'sphere',name:'Circle'},
     {id:'hex',name:'Hex'},
-    {id:'pill',name:'Pill'}
+    {id:'pill',name:'Pill'},
+    {id:'capsule',name:'Sideways pill'},
+    {id:'arch',name:'Arch'},
+    {id:'diamond',name:'Diamond'}
   ];
   // ink is the figure colour on a light surface, inkDark on a dark one, text the author-name colour on light.
   // buddy-figures.js draws with the same inks; a test keeps the two tables equal.

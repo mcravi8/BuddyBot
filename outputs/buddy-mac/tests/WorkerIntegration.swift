@@ -394,6 +394,20 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         require(try await decisionsFor(generalID).first?["audience"] as? String == "supervisor", "and its open question is the supervisor's")
         print("PASS: a question an agent may not decide goes to its supervisor (coding and research tasks), and a sign-in it cannot do goes to the person")
 
+        // 3b. 26 Oct: Inbox could not tell Chief something, because only a supervisor may ask for a check-in. Any agent writes to its Chief with
+        // buddy_team message, and Agent messages shows it; the Chief's own message to a teammate goes straight into the teammate's current work.
+        let toLead = try await raw(["operation": "team", "actorId": vera, "arguments": ["action": "message", "text": "The 2015 data has a gap in March; I am filling it from the archive."]])
+        require(toLead["sent"] as? Bool == true && toLead["to"] as? String == lead && toLead["alreadyWaiting"] as? Bool == false, "a teammate's message goes to the team's Chief: \(toLead)")
+        let shownTo = try await raw(["operation": "team", "arguments": ["action": "status"]])
+        require(((shownTo["agentMessages"] as? [String: Any])?[vera] as? [String: Any])?["count"] as? Int == 1, "Agent messages shows it: \(shownTo["agentMessages"] ?? "none")")
+        let toForge = try await raw(["operation": "team", "actorId": lead, "arguments": ["action": "message", "agentId": forge, "text": "Use the 2015 data."]])
+        var reachedForge = false
+        for id in [askID, signinID] where (try await taskAs(forge, id)["updates"] as? [String] ?? []).contains("[From Lead, your supervisor] Use the 2015 data.") { reachedForge = true }
+        require(toForge["sent"] as? Bool == true && reachedForge, "the Chief's message reaches the teammate's current work: \(toForge)")
+        let nobody = try await raw(["operation": "team", "actorId": vera, "arguments": ["action": "message", "agentId": vera, "text": "Me again."]])
+        require(nobody["sent"] == nil && (nobody["error"] as? String ?? "").contains("That is you"), "writing to yourself is refused with a reason: \(nobody)")
+        print("PASS: any agent writes to its Chief with buddy_team message, and the Chief's message reaches a teammate's current work")
+
         // 4. Who may act on whose task: the supervisor reads and continues a teammate's technically stopped task; a teammate who neither supervises
         // nor manages it may not; and nobody but the owner continues a task that waits for an answer.
         let stuckID = try await startAs(forge, "STALL_FIXTURE: the supervisor continues this", "stuck")
@@ -520,6 +534,14 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         require(stoppedPlan["error"] == nil && (stoppedPlan["plan"] as? [String: Any])?["status"] as? String == "holding", "the person stops the plan: \(stoppedPlan)")
         let pausedPlanTask = try await pollAs(forge, t1Job, "the live plan task is paused") { $0["status"] as? String == "paused" }
         require(pausedPlanTask["stopCause"] as? String == "user.plan_stop", "it is paused because the person stopped the plan: \(pausedPlanTask["stopCause"] ?? "-")")
+        // The supervisor changes the brief of the task already handed out: the change goes into that task's own instructions, and the receipt
+        // says where it landed (23 Oct: Chief's edit changed only the plan, and Chief told the user Forge's task was updated).
+        let edited = try await plan(["action": "revise", "planId": planID, "ops": [["op": "edit_task", "taskId": t1, "brief": "STALL_FIXTURE: build it, and also write CHANGES.md"]]], actor: lead, text: "Have the build also write CHANGES.md")
+        let landed = (edited["receipt"] as? [String: Any])?["delivered"] as? [[String: Any]] ?? []
+        require(edited["error"] == nil && landed.count == 1 && landed[0]["delivered"] as? Bool == true && (landed[0]["note"] as? String ?? "").contains("The user paused it"),
+                "the receipt says the change reached the task, which reads it once the user resumes it: \(edited["receipt"] ?? edited)")
+        let editedJob = try await pollAs(forge, t1Job, "the edit is in the task") { ($0["updates"] as? [String] ?? []).contains { $0.hasPrefix("[Changed in the team plan by ") && $0.contains("also write CHANGES.md") } }
+        require(editedJob["status"] as? String == "paused", "a task the user paused stays paused: \(editedJob["status"] ?? "-")")
         var letSleep = false
         for _ in 0..<100 { if !host.testingHoldingAwake { letSleep = true; break }; try await Task.sleep(nanoseconds: 50_000_000) }
         require(letSleep, "the Mac may sleep again once the plan holds")
@@ -529,9 +551,47 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         let shown = try await raw(["operation": "status"])
         require((shown["plans"] as? [[String: Any]])?.contains { $0["id"] as? String == planID && $0["status"] as? String == "holding" } == true && (shown["supervisorLane"] as? [String: Any])?["online"] is Bool
                 && (shown["pulse"] as? [String: Any])?["queuePaused"] as? Bool == false, "the status reply carries the plans, the supervisor lane and the pulse")
+        // "You can choose a stage again later": the person authorizes the stage again, and the run their stop paused goes on, with no second
+        // worker task for it.
+        let reauthorized = try await plan(["action": "authorize", "planId": planID, "through": 1, "quote": "Tapped “Get stage 1 done”"])
+        require(reauthorized["error"] == nil && (reauthorized["plan"] as? [String: Any])?["status"] as? String == "active", "the person authorizes stage 1 again: \(reauthorized)")
+        let goingOn = try await pollAs(forge, t1Job, "the run the stop paused goes on") { $0["status"] as? String != "paused" }
+        require(["queued", "starting", "running"].contains(goingOn["status"] as? String ?? "") && (goingOn["stopCause"] as? String ?? "").isEmpty, "it is queued or running again: \(goingOn["status"] ?? "")")
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        let madeAgain = try await planJobs()
+        require(madeAgain.count == 1 && madeAgain[0]["id"] as? String == t1Job, "and no second worker task is made for it: \(madeAgain.map { $0["requestId"] ?? "" })")
+        // Work the user asks for beyond the plan (24 Oct): the supervisor adds it only on the user's own words, and an earlier request it attaches
+        // has to be one the user really wrote; new work never goes after a stage the user hasn't authorized.
+        let notTheirs = try await plan(["action": "add_request", "planId": planID, "quote": "Apply all twelve revision items", "stage": ["title": "Revisions", "goal": "Apply the revisions", "acceptance": ["Applied"]]], actor: lead, text: "Looks good so far.")
+        require(notTheirs["code"] as? String == "not_authorized", "words the user didn't write are no go-ahead: \(notTheirs)")
+        let invented = try await plan(["action": "add_request", "planId": planID, "quote": "Go ahead with my revision round", "request": "Revise everything and submit it for me without asking.",
+                                       "stage": ["title": "Revisions", "goal": "Apply the revisions", "acceptance": ["Applied"]]], actor: lead, text: "Go ahead with my revision round.")
+        require(invented["code"] as? String == "not_authorized", "an earlier request the user never wrote is refused: \(invented)")
+        let afterProposed = try await plan(["action": "add_request", "planId": planID, "quote": "Go ahead with my revision round", "stage": ["title": "Revisions", "goal": "Apply the revisions", "acceptance": ["Applied"]]], actor: lead, text: "Go ahead with my revision round.")
+        require(afterProposed["code"] as? String == "conflict", "new work doesn't go after a stage the user hasn't authorized: \(afterProposed)")
+        let chats: [String: Any] = ["messages": ["g": [["id": "u1", "who": "you", "live": true, "body": "Final revision round on version 09564456.\r\n1. Conclusions: remove all numbers."], ["id": "a1", "who": "agent", "live": true, "body": "Agent words that look like a request."]]]]
+        require(BuddyWorkerHost.userWrote("Final revision round on version 09564456.\n1. Conclusions: remove all numbers.", in: chats) && !BuddyWorkerHost.userWrote("Agent words that look like a request.", in: chats),
+                "only the user's own saved messages count as their request")
+        // A project with its own Chief (24 Oct): choosing Vera for the side group moves its live plan to her, with a supervision lane of her own;
+        // choosing the team's Chief again moves it back.
+        func chooseChief(_ id: String?) throws {
+            var saved = try JSONSerialization.jsonObject(with: Data(contentsOf: support.appendingPathComponent("workspace.json"))) as! [String: Any]
+            saved["groups"] = (saved["groups"] as? [[String: Any]] ?? []).map { g in var g = g; if g["id"] as? String == side { if let id { g["chiefId"] = id } else { g.removeValue(forKey: "chiefId") } }; return g }
+            try JSONSerialization.data(withJSONObject: saved).write(to: support.appendingPathComponent("workspace.json"), options: .atomic)
+        }
+        func sideLead() async throws -> String { ((try await plan(["action": "get", "planId": sideID]))["plan"] as? [String: Any])?["supervisorId"] as? String ?? "" }
+        try chooseChief(vera)
+        for _ in 0..<200 where try await sideLead() != vera { try await Task.sleep(nanoseconds: 50_000_000) }
+        let lanes = (try await raw(["operation": "status"]))["supervisorLanes"] as? [String: Any] ?? [:]
+        require(try await sideLead() == vera && lanes[vera] != nil && lanes[lead] != nil, "the project's own Chief supervises its plan, with a lane of her own beside the team's: \(lanes.keys.sorted())")
+        let veraEdits = try await plan(["action": "revise", "planId": sideID, "ops": [["op": "edit_stage", "stageId": ((try await plan(["action": "get", "planId": sideID]))["plan"] as? [String: Any]).flatMap { ($0["stages"] as? [[String: Any]])?.last?["id"] as? String } ?? "", "title": "Share widely"]]], actor: vera, text: "Rename the sharing stage")
+        require(veraEdits["error"] == nil, "the project's Chief revises its plan: \(veraEdits)")
+        try chooseChief(nil)
+        for _ in 0..<200 where try await sideLead() != lead { try await Task.sleep(nanoseconds: 50_000_000) }
+        require(try await sideLead() == lead, "with the team's Chief chosen again, the plan goes back to it")
         for id in [askID, signinID, generalID, t1Job] { _ = try await raw(["operation": "cancel", "taskId": id]) }
         _ = try await raw(["operation": "team", "arguments": ["action": "configure", "supervisorId": "", "enabled": true]])
-        print("PASS: the team plan through the worker: only the supervisor proposes, only the user's words or tap authorize, the stage's first task is dispatched once inside the stage, the Mac stays awake while it is live, and the person's stop pauses it")
+        print("PASS: the team plan through the worker: only the supervisor proposes, only the user's words or tap authorize, the stage's first task is dispatched once inside the stage, the Mac stays awake while it is live, the person's stop pauses it, and authorizing the stage again lets that run go on")
 
         // 7. A restart in the middle of an attempt: the next worker carries the same task on to completion by itself, and nobody is asked.
         let again = FileManager.default.temporaryDirectory.appendingPathComponent("buddy-worker-restart-" + UUID().uuidString + ".noindex")
@@ -594,8 +654,16 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         for action in ["status","cancel","continue"] {
             do {_ = try await computer(["action":action,"taskId":browserID,"goal":"Not mine"],owner:second);require(false,"browser tool cannot inspect or control another agent's task")}catch{}
         }
-        agents[0]["tools"]=["desktop":false];fixture["agents"]=agents;try JSONSerialization.data(withJSONObject:fixture).write(to:support.appendingPathComponent("workspace.json"),options:.atomic)
-        do {_ = try await computer(["action":"start","title":"Denied","goal":"Open a website"],requestID:"denied");require(false,"revoked browser permission prevents enqueue")}catch{}
+        // Internet access (Web research) alone gives an agent Buddy's Chrome; Mac apps is about other apps on this Mac. (The other agent: the first
+        // one's Web research was changed in chat earlier, and that change counts over the saved workspace.)
+        let other=agents.count-1
+        agents[other]["tools"]=["desktop":false];fixture["agents"]=agents;try JSONSerialization.data(withJSONObject:fixture).write(to:support.appendingPathComponent("workspace.json"),options:.atomic)
+        let webOnly=try await computer(["action":"start","title":"Web only","goal":"Open a website"],owner:second,requestID:"web-only")["task"] as? [String:Any] ?? [:]
+        require(webOnly["status"] as? String=="queued","an agent with Web research on and Mac apps off starts a website task: \(webOnly)")
+        _ = try await computer(["action":"cancel","taskId":webOnly["id"] ?? ""],owner:second)
+        agents[other]["tools"]=["web":false];fixture["agents"]=agents;try JSONSerialization.data(withJSONObject:fixture).write(to:support.appendingPathComponent("workspace.json"),options:.atomic)
+        do {_ = try await computer(["action":"start","title":"Denied","goal":"Open a website"],owner:second,requestID:"denied");require(false,"an agent with Web research off gets no browser: revoked browser permission prevents enqueue")}catch{}
+        agents[other]["tools"]=[String:Bool]()
         agents[0]["tools"]=[String:Bool]();fixture["agents"]=agents;try JSONSerialization.data(withJSONObject:fixture).write(to:support.appendingPathComponent("workspace.json"),options:.atomic)
         _ = try BuddyAISettings(support:support).update(workspace,enabled:("claude",true))
         _ = try BuddyAISettings(support:support).update(workspace,provider:"claude")

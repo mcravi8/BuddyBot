@@ -128,6 +128,11 @@ test('a task waiting only on the supervisor\u2019s review posts nothing in the c
  const mixed={...base,reviews:[{id:'r1',kind:'coding',status:'pending',route:'supervisor'},{id:'r2',kind:'coding',status:'pending',route:'user'}]};
  assert.equal(worker.deliverable(mixed),true,'one review that is the person\u2019s still shows');
  assert.equal(worker.deliverable({...base,reviews:[{id:'r2',kind:'coding',status:'pending',route:'user'}]}),true);
+ // A request on the person's list Chief looks at first ('screen') is Chief's until it passes it on: nothing in the chat yet, also for a paid service.
+ const screened={...base,reviews:[{id:'r3',kind:'coding',status:'pending',route:'screen'}]};
+ assert.equal(worker.supervisorWait(screened),true);assert.equal(worker.deliverable(screened),false,'nothing for the person while Chief looks for another way');
+ const paid={...base,progress:'Chief is looking for another way before this request to RunPod comes to you',reviews:[{id:'r4',kind:'service',status:'pending',route:'screen',request:{service:'RunPod',cost:{maxCostUSD:2.56}}}]};
+ assert.equal(worker.supervisorWait(paid),true);assert.doesNotMatch(worker.taskMessage(paid),/I need your OK/);
  assert.equal(worker.deliverable({...base,reviews:[{id:'r3',kind:'coding',status:'answered',route:'auto'}],status:'running'}),false,'Buddy\u2019s own approval never waits');
 });
 
@@ -178,24 +183,24 @@ test('what was asked is named in one short line',()=>{
  for(const r of [commandReview,browserReview,{tool:{name:'A '.repeat(200)}},{tool:{arguments:{command:'x'.repeat(5000)}}}]){const line=worker.requestTitle(r);assert.equal(line.includes('\n'),false);assert.ok(line.length<=80,line);}
 });
 
-test('the approval message in the chat changes to what was decided, in place, and stays that way after a reload',()=>{
+test('an answered approval leaves the chat, and its message keeps what was decided, also after a reload',()=>{
  const s={conversationWorkspace:'w',agents:[{id:'coder'}],messages:{}},t={id:'code',kind:'coding',workspace:'w',agentId:'coder',title:'Fetch the S&P history',status:'waiting_review',attempt:1,progress:'A coding command needs network access',attentionKey:'cmd',updatedAt:'2026-10-20T10:00:00Z',reviews:[commandReview]};
  assert.equal(worker.deliverResult(s,t),true);
  const m=s.messages.coder[0];assert.equal(worker.presentation(s,m).body,'I need your approval to continue.');assert.notEqual(worker.presentation(s,m).link,false,'the Review task link is there while it waits');
  assert.equal(worker.recordDecision(s,'code',{reviewId:'cmd',title:worker.requestTitle(commandReview),verdict:'approved',by:'user'}),true);
  assert.equal(s.messages.coder.length,1,'the same message, not a second one');
- assert.equal(worker.presentation(s,m).body,'Request to run `curl … data/SPX_History.csv` — approved');assert.equal(worker.presentation(s,m).link,false,'Review task goes away');
+ assert.equal(worker.presentation(s,m).hidden,true,'answered, it leaves the chat');assert.equal(worker.presentation(s,m).body,'Request to run `curl … data/SPX_History.csv` — approved');
  assert.equal(m.body,'Request to run `curl … data/SPX_History.csv` — approved','the chat list preview reads it too');
- const reloaded=JSON.parse(JSON.stringify(s));assert.equal(worker.presentation(reloaded,reloaded.messages.coder[0]).body,'Request to run `curl … data/SPX_History.csv` — approved');
+ const reloaded=JSON.parse(JSON.stringify(s));assert.equal(worker.presentation(reloaded,reloaded.messages.coder[0]).body,'Request to run `curl … data/SPX_History.csv` — approved');assert.equal(worker.presentation(reloaded,reloaded.messages.coder[0]).hidden,true);
  assert.equal(worker.recordDecision(s,'code',{reviewId:'cmd',title:'x',verdict:'disapproved',by:'user'}),false,'answered once');
- // The next approval in the same run gets its own message; the decided one stays as the record.
+ // The next approval in the same run gets its own message; the decided one keeps its record.
  const next={...commandReview,id:'cmd2',tool:{...commandReview.tool,arguments:{command:'npm test'}}};
  assert.equal(worker.deliverResult(s,{...t,attentionKey:'cmd2',updatedAt:'2026-10-20T10:01:00Z',reviews:[{...commandReview,status:'answered'},next]}),true);
  assert.equal(s.messages.coder.length,2);assert.equal(worker.presentation(s,s.messages.coder[0]).body,'Request to run `curl … data/SPX_History.csv` — approved');
  assert.equal(worker.recordDecision(s,'code',{reviewId:'cmd2',title:worker.requestTitle(next),verdict:'disapproved',by:'user'}),true);
  assert.equal(worker.presentation(s,s.messages.coder[1]).body,'Request to run `npm test` — disapproved');
  assert.equal(worker.deliverResult(s,{...t,status:'completed',result:'Saved the history.',updatedAt:'2026-10-20T10:02:00Z'}),true);
- assert.deepEqual(s.messages.coder.map(m=>worker.presentation(s,m).hidden),[false,false,false],'decisions stay in the chat after the result arrives');
+ assert.deepEqual(s.messages.coder.map(m=>worker.presentation(s,m).hidden),[true,true,false],'what was asked has left; the result is what stays');
 });
 
 test('a message saved before review ids were kept still finds its review from its delivery id',()=>{
@@ -212,7 +217,8 @@ test('an answer the supervisor gave is read from the review record, with its rea
  assert.equal(worker.presentation(s,s.messages.coder[0]).body,'I need your approval to continue.');
  assert.equal(worker.reconcile(s,{...t,status:'running',reviews:[{...commandReview,status:'answered',answeredBy:'supervisor',answeredByName:'Chief',answerReason:'A read-only download of public prices.',answeredAt:'2026-10-20T10:00:30Z'}]}),true);
  const p=worker.presentation(s,s.messages.coder[0]);
- assert.equal(p.body,'Request to run `curl … data/SPX_History.csv` — approved by Chief');assert.match(p.details,/A read-only download of public prices\./);assert.equal(p.link,false);
+ assert.equal(p.body,'Request to run `curl … data/SPX_History.csv` — approved by Chief');assert.equal(p.hidden,true,'answered by Chief, it leaves the chat');
+ assert.equal(s.messages.coder[0].workerDecision.reason,'A read-only download of public prices.','the message keeps why');
  assert.equal(worker.reconcile(s,{...t,status:'running',reviews:[{...commandReview,status:'answered',answeredBy:'supervisor',answeredByName:'Chief',answerReason:'A read-only download of public prices.'}]}),false,'nothing new, nothing changed');
  const s2={conversationWorkspace:'w',agents:[{id:'coder'}],messages:{}};worker.deliverResult(s2,t);
  assert.equal(worker.reconcile(s2,{...t,status:'running',reviews:[{...commandReview,status:'cancelled',answeredBy:'supervisor',answeredByName:'Chief',answerReason:'It writes outside the project.'}]}),true);
@@ -243,4 +249,147 @@ test('a task pinned to an account says “Uses …” on the task and on the rep
  const html=worker.taskReceipts([{id:'t1',title:'Check <my> calendar',account:'craviott@usc.edu'}]);
  assert.match(html,/Uses craviott@usc\.edu/);assert.match(html,/data-worker-task="t1"/);assert.match(html,/Check &lt;my&gt; calendar/);assert.doesNotMatch(html,/<my>/);
  assert.equal(worker.taskReceipts([]),'');assert.equal(worker.taskReceipts(),'');
+});
+test('internet access is Web research alone: Set up once says so, and every agent with Web research on uses Buddy’s Chrome whatever its Mac apps setting',()=>{
+ const button=(op,label)=>`<button data-worker-op="${op}">${label}</button>`;
+ const agents=[{id:'a',name:'Ada',tools:{web:true,desktop:true}},{id:'l',name:'Lyra',tools:{web:true,desktop:false}},{id:'f',name:'Forge',tools:{desktop:false}},{id:'c',name:'Cy',tools:{web:false,desktop:true}}];
+ assert.deepEqual(worker.browserUsers(agents),['a','l','f'],'Mac apps off does not take the browser away');
+ const html=worker.setupOnce({agents,using:worker.browserUsers(agents),legacy:[],button});
+ assert.match(html,/Every agent with internet access will use the accounts you sign in to here\. Internet access is Web research in an agent’s settings; Mac apps doesn’t need to be on\./);
+ assert.match(html,/Used by Ada, Lyra, Forge\./);assert.match(html,/No browser for Cy \(internet access is off\)/);
+});
+test('Saved sign-ins lists each service sign-in as Saved or Not saved, with Replace (or Add) and Remove; the field Replace opens is empty and private',()=>{
+ const saved=worker.savedSignins({profiles:[{id:'wrds',name:'WRDS',saved:true}]});
+ assert.match(saved,/<section class="worker-saved-signins"/);assert.match(saved,/Saved sign-ins/);assert.match(saved,/<strong>WRDS<\/strong><small>Saved<\/small>/);
+ assert.match(saved,/data-saved-replace="wrds"[^>]*>Replace</);assert.match(saved,/data-saved-remove="wrds"[^>]*>Remove</);assert.doesNotMatch(saved,/<input/,'no field until Replace');
+ const none=worker.savedSignins({profiles:[{id:'wrds',name:'WRDS',saved:false}]});
+ assert.match(none,/<small>Not saved<\/small>/);assert.match(none,/data-saved-replace="wrds"[^>]*>Add</);assert.doesNotMatch(none,/data-saved-remove/,'nothing to remove');
+ const editing=worker.savedSignins({profiles:[{id:'wrds',name:'WRDS',saved:true}],editing:'wrds'});
+ const inputs=editing.match(/<input[^>]*>/g)||[];
+ assert.equal(inputs.length,2);assert.match(inputs[0],/type="text"/);assert.match(inputs[1],/type="password"/);
+ for(const i of inputs){assert.match(i,/autocomplete="off"/);assert.match(i,/spellcheck="false"/);assert.doesNotMatch(i,/\svalue=/,'the field is drawn empty, never with a value');assert.doesNotMatch(i,/data-signin-input/,'not a chat field');}
+ assert.match(editing,/data-saved-save="wrds"[^>]*>Save</);assert.match(editing,/data-saved-cancel="wrds"/);assert.match(editing,/straight to your Mac’s Keychain/);assert.doesNotMatch(editing,/data-saved-replace/);
+ const removing=worker.savedSignins({profiles:[{id:'wrds',name:'WRDS',saved:true}],removing:'wrds'});
+ assert.match(removing,/Remove the saved WRDS sign-in\?/);assert.match(removing,/data-saved-confirm-remove="wrds"/);
+ assert.match(worker.savedSignins({profiles:null}),/Checking…/);
+ assert.match(worker.savedSignins({profiles:[{id:'x',name:'A<b>',saved:true}],note:'Done <i>'}),/A&lt;b&gt;[\s\S]*Done &lt;i&gt;/);
+ assert.doesNotMatch(worker.savedSignins({profiles:[{id:'x',name:'A<b>',saved:true}]}),/<b>/);
+});
+
+test('Background work lists every task running now with its agent, and Run at once offers 1 to 6',()=>{
+ const tasks=[{id:'a',title:'Left half',agentId:'f',status:'running'},{id:'b',title:'Right <half>',agentId:'v',status:'running'},{id:'c',title:'Notes',agentId:'x',status:'queued'}];
+ const agents=[{id:'f',name:'Forge'},{id:'v',name:'Vera & co'}];
+ const html=worker.runningNow({tasks,running:['a','b'],maxRunning:3,agents});
+ assert.match(html,/Working now · 2 of 3 at once/);
+ assert.equal((html.match(/data-worker-task=/g)||[]).length,2,'one row per running task, each opening its task');
+ assert.match(html,/data-worker-task="a"[\s\S]*Left half[\s\S]*Forge[\s\S]*data-worker-task="b"[\s\S]*Right &lt;half&gt;[\s\S]*Vera &amp; co/,'oldest first, each with its agent, escaped');
+ assert.doesNotMatch(html,/Notes/,'a queued task is not running');
+ assert.equal(worker.runningNow({tasks,running:[],maxRunning:3,agents}),'','nothing when nothing runs');
+ assert.equal(worker.runningNow({tasks,running:['gone'],agents}),'','a task the list no longer has is left out');
+ const field=worker.runLimitField(2);
+ assert.deepEqual([...field.matchAll(/<option value="(\d)"/g)].map(m=>Number(m[1])),[1,2,3,4,5,6]);
+ assert.match(field,/<option value="2" selected>Up to 2 tasks/);assert.match(field,/<option value="1" >One task at a time/);
+ assert.match(field,/data-worker-max-running/);assert.match(field,/Each agent works on one task at a time/);
+ assert.match(worker.runLimitField(undefined),/<option value="3" selected>/,'three until the person chooses');
+ assert.match(worker.runLimitField(9),/<option value="3" selected>/,'anything outside 1 to 6 shows the default');
+});
+
+test('the Work page has one row per piece of work: a plan task’s runs are one row, what needs the person first',()=>{
+ const at=m=>new Date(Date.parse('2026-10-22T12:00:00Z')-m*60000).toISOString();
+ const run=(id,status,m,extra={})=>({id,title:'S02a outstanding acceptance',agentId:'forge',status,planId:'p1',planTaskId:'t3',updatedAt:at(m),...extra});
+ const tasks=[run('o1','completed',600),run('o2','completed',500),run('o3','cancelled',300,{agentId:'lyra'}),run('w3','running',2),
+  {id:'q1',title:'Find the 2015 data',agentId:'lyra',status:'waiting_user',updatedAt:at(30)},{id:'c1',title:'Containment',agentId:'forge',status:'completed',planTaskId:'t4',updatedAt:at(120)},
+  {id:'x1',title:'Old note',agentId:'chief',status:'failed',updatedAt:at(900)}];
+ const g=worker.workGroups(tasks);
+ assert.deepEqual(g.needs.map(r=>r.latest.id),['q1','x1'],'waiting for the person, and stopped, newest first');
+ assert.deepEqual(g.running.map(r=>[r.latest.id,r.earlier,r.finished,r.cancelled]),[['w3',3,2,1]],'the plan task’s latest run, with its earlier runs counted');
+ assert.deepEqual(g.finished.map(r=>r.latest.id),['c1']);
+ assert.deepEqual(worker.workGroups([]),{needs:[],running:[],finished:[]});
+ assert.deepEqual(worker.workGroups([{title:'no id'},null]),{needs:[],running:[],finished:[]},'only real tasks count');
+});
+
+test('given the bell’s list, Background work’s Needs you is exactly what is on it',()=>{
+ const at=m=>new Date(Date.parse('2026-10-27T12:00:00Z')-m*60000).toISOString();
+ const tasks=[{id:'a',title:'Waits for the person',status:'waiting_user',updatedAt:at(1)},{id:'b',title:'Chief is handling it',status:'failed',updatedAt:at(2)},
+  {id:'c',title:'Retries by itself',status:'failed',recovery:{state:'pending'},updatedAt:at(3)},{id:'d',title:'Running',status:'running',updatedAt:at(4)},{id:'e',title:'Done',status:'completed',updatedAt:at(5)}];
+ const g=worker.workGroups(tasks,new Set(['a']));
+ assert.deepEqual(g.needs.map(r=>r.latest.id),['a'],'only what the bell lists');
+ assert.deepEqual(g.running.map(r=>r.latest.id),['c','d'],'retrying by itself counts as running');
+ assert.deepEqual(g.finished.map(r=>r.latest.id),['b','e'],'a stop that does not need the person is not Needs you');
+});
+
+test('a waiting approval or question stays in the chat only while its task still waits on the person',()=>{
+ const s={conversationWorkspace:'w',agents:[{id:'forge'}],messages:{}},t={id:'job',workspace:'w',agentId:'forge',title:'Run S02c',status:'waiting_user',attempt:2,progress:'Which RunPod account should I use?',updatedAt:'2026-10-23T21:30:00Z'};
+ assert.equal(worker.deliverResult(s,t),true);const m=s.messages.forge[0];
+ const shown=tasks=>!worker.presentation(s,m,tasks).hidden;
+ assert.equal(shown(null),true,'with no status yet it stays');
+ assert.equal(shown([{...t}]),true,'while the task waits on the person');
+ assert.equal(shown([{...t,status:'running'}]),false,'answered: the task runs again');
+ assert.equal(shown([{...t,status:'cancelled'}]),false,'the task was cancelled');
+ assert.equal(shown([{...t,status:'completed'}]),false);
+ assert.equal(shown([{...t,attempt:3}]),false,'a newer run of the task is not what this asked');
+ assert.equal(shown([]),false,'a task the worker no longer lists waits on no one');
+ assert.equal(shown([{...t,stopCause:'checkpoint.supervisor',progress:'Waiting for Chief: Which RunPod path?'}]),false,'a question for Chief is not the person’s');
+ assert.equal(worker.deliverable({...t,stopCause:'checkpoint.supervisor'}),false,'and posts nothing in the chat');
+});
+
+test('a task waiting on the person never shows the worker’s running line as what it needs',()=>{
+ assert.equal(worker.taskMessage({status:'waiting_user',progress:'Working on your request'}),'I need a detail from you to continue.');
+ assert.equal(worker.taskMessage({status:'waiting_user',progress:'Queued'}),'I need a detail from you to continue.');
+ assert.equal(worker.taskMessage({status:'waiting_user',progress:'Which RunPod account should I use?'}),'Which RunPod account should I use?');
+});
+
+// Connected services (RunPod first): the card a person approves for a request that can cost money, and for files leaving the Mac.
+const runpodReview=(extra={})=>({id:'svc-1',kind:'service',status:'pending',route:'user',questions:[{id:'operation',question:'Allow this request to RunPod?',options:[{label:'Accept'},{label:'Decline'}]}],
+ request:{agent:'Forge',service:'RunPod',baseUrl:'https://rest.runpod.io/v2',charges:true,method:'POST',path:'/pods',query:{},body:'{\n  "cpu" : {\n    "vcpuCount" : 32\n  }\n}',reason:'Run the 800 C1 replications on 32 vCPUs instead of this Mac.',
+  cost:{perHour:1.28,maxHours:6,maxCostUSD:7.68},lease:{resource:'/id',teardown:'DELETE /pods/{id}',maxHours:6},uploads:[{path:'stages/S02c_review',files:214,bytes:3400000}]},
+ tool:{name:'POST /pods on RunPod',service:'RunPod',arguments:{request:'POST https://rest.runpod.io/v2/pods'}},...extra});
+test('a request to a service that can charge money reads as one plain card: who, what, the exact request, the cost estimate, the cleanup, the uploads and why',()=>{
+ const said=worker.plainRequest(runpodReview());
+ assert.equal(said.what,'send a POST request to RunPod');
+ assert.equal(said.why,'Run the 800 C1 replications on 32 vCPUs instead of this Mac.');
+ assert.equal(said.caution,'RunPod can charge you money.');
+ assert.deepEqual(said.facts,['Request: POST https://rest.runpod.io/v2/pods',
+  'Cost (Forge’s estimate): $1.28 an hour, for at most 6 hours: at most $7.68',
+  'Cleanup: Buddy calls DELETE /pods/{id} when Forge is done, when the task ends, and after 6 hours at the latest',
+  'Uploads to it: stages/S02c_review (214 files, 3.4 MB)']);
+ assert.match(said.body,/"vcpuCount" : 32/);
+ assert.equal(worker.isApproval(runpodReview()),true,'answered with Approve and Disapprove');
+ assert.equal(worker.requestTitle(runpodReview()),'Send a POST request to RunPod');
+ assert.deepEqual(worker.reviewRequest('t1',runpodReview(),{},'approve'),{operation:'review',taskId:'t1',id:'svc-1',answers:{operation:['Accept']},cancel:false,accept:true});
+ assert.equal(worker.taskMessage({status:'waiting_review',reviews:[runpodReview()]}),'I need your OK for a request to RunPod: at most $7.68.');
+ assert.equal(worker.taskMessage({status:'waiting_review',progress:'Waiting for your OK for a request to RunPod: at most $7.68'}),'I need your OK for a request to RunPod: at most $7.68.','the chat says it from the progress Buddy wrote');
+ assert.equal(worker.taskMessage({status:'waiting_review',progress:'A coding command needs network access'}),'I need your approval to continue.','other reviews read as before');
+ assert.equal(worker.taskMessage({status:'waiting_review',progress:'I need your OK for a request to RunPod: at most $7.68.'}),'I need your OK for a request to RunPod: at most $7.68.','drawn again, it reads the same');
+ // A service that can't charge money says nothing about money; its review is the supervisor's and posts nothing in the chat.
+ const notes=runpodReview({route:'supervisor',request:{...runpodReview().request,service:'Notes',charges:false,cost:undefined,lease:undefined,uploads:[]}});
+ assert.equal(worker.plainRequest(notes).caution,'');assert.equal(worker.supervisorWait({status:'waiting_review',reviews:[notes]}),true);
+ const upload={id:'up-1',kind:'upload',status:'pending',route:'user',questions:[{id:'operation',question:'Send these files to the machine?',options:[{label:'Accept'},{label:'Decline'}]}],upload:{agent:'Forge',host:'203.0.113.7',lease:'RunPod pod01abc',files:[{path:'extra/params.json',files:1,bytes:180}],reason:'The run’s parameters.'}};
+ assert.deepEqual(worker.plainRequest(upload),{what:'send 1 project file to 203.0.113.7',why:'The run’s parameters.',caution:'These files leave this Mac.',facts:['To: RunPod pod01abc','Sends: extra/params.json (1 files, 180 bytes)']});
+ assert.equal(worker.taskMessage({status:'waiting_review',reviews:[upload]}),'I need your OK to send project files to 203.0.113.7.');
+});
+test('a coding task waiting for its own command on a leased machine is running, not paused: one plain message, and nobody is asked anything',()=>{
+ const t={id:'c1',kind:'coding',workspace:'w',agentId:'a',title:'C1 replications',status:'paused',blockedBy:'remote',stopCause:'remote.running',attempt:2,progress:'Running on 203.0.113.7 for 12 min · 37 result files there · Buddy continues when it ends',updatedAt:'2026-10-23T20:00:00Z'};
+ assert.equal(worker.label(t),'Running remotely');assert.equal(worker.systemPause(t),false);assert.equal(worker.remoteWait(t),true);
+ const s={conversationWorkspace:'w',agents:[{id:'a'}],messages:{}};
+ assert.equal(worker.deliverResult(s,t),true);assert.equal(s.messages.a[0].body,'**C1 replications** is running on a remote machine. I’ll continue when it’s done.');
+ assert.equal(worker.workGroups([t]).running.length,1,'listed under Running in Background work');
+});
+
+test('a long task report shows its opening, the files it saved and what comes next; the working notes fold under Full report',()=>{
+ const report=['**Stage 2 is PARTIAL.** The calibration finished all 33 paths, but no process passed the gates, so the rates are blank. They are not estimates of 0%.',
+  'The detector found 34 onsets and 17 eligible events. An independent replay matched every path.',
+  'The [recovery rates](</p/rates.csv>) and [verification](</p/verification.md>) are saved in Research.',
+  'Commands run: `python3 calibrate.py` passed; `python3 seal.py` passed; the first `verify.py` call exited 1 because a folder was missing; after fixing it the second passed.',
+  'Choices made: I kept the inherited detector so counts compare, and froze the seeds first. **Next:** Chief can use this partial snapshot under the fallback gate. Stage 4 was not started.',
+  '','---','Command receipts: 15 finished, 13 exited successfully.'].join('\n');
+ const p=worker.reportParts(report);
+ assert.equal(p.lead,report.split('\n')[0],'the opening line, as written');
+ assert.deepEqual(p.saved,['The [recovery rates](</p/rates.csv>) and [verification](</p/verification.md>) are saved in Research.'],'the line that links what it saved');
+ assert.equal(p.next,'Chief can use this partial snapshot under the fallback gate. Stage 4 was not started.');
+ assert.match(p.more,/^The detector found 34 onsets/);assert.match(p.more,/Commands run: `python3 calibrate.py`/);assert.match(p.more,/Choices made: .*froze the seeds first\.$/m);
+ assert.match(p.more,/Command receipts: 15 finished, 13 exited successfully\.$/,'Buddy’s receipts are in the full report');
+ assert.doesNotMatch(p.more,/Stage 2 is PARTIAL|recovery rates\]|Next:/,'nothing shown above is said twice');
+ assert.equal(worker.reportParts('Created the inbox chief@example.test.'),null,'a short report shows as it is');
+ assert.equal(worker.reportParts(''),null);
 });

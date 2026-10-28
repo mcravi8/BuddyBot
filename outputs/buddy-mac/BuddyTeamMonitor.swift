@@ -17,6 +17,8 @@ import Foundation
     /// Saved on a check that can no longer happen (its agent, the team settings or its provider changed) and was dropped without a word.
     static let dropped="This check was dropped: its agent, the team settings or its AI provider changed. Nothing needs you."
     var lastError=""
+    /// The plan's exchanges between teammates and the supervisor, for Agent messages (set by the worker host, which keeps the plans).
+    var planConversations:@MainActor ()->[[String:Any]]={[]}
     init(support:URL,makeClaude:(()->BuddyWorkerProcess)?=nil,makeGPT:(()->ConversationService)?=nil,keyReader:@escaping (String)->String?=BuddyClaudeKey.read)throws {
         self.support=support;store=try BuddyTeamMonitorStore(support:support);memory=try BuddyAgentMemory(support:support);self.makeClaude=makeClaude ?? {BuddyWorkerProcess()};self.makeGPT=makeGPT ?? {ConversationService(support:support)};self.keyReader=keyReader
     }
@@ -29,7 +31,7 @@ import Foundation
     }
     private func selected(_ a:[String:Any],workspace:String)throws->BuddyAgentModelSelection {try BuddyAgentModels(support:support).selection(workspace:workspace,agent:a["id"] as! String) ?? .initial(BuddyAISettings(support:support).current(workspace).provider)}
     func status(_ raw:[String:Any])throws->[String:Any] {
-        try memory.synchronize(raw);_ = try store.policy(raw);let state=try BuddyAgentMemory.overlay(raw,support:support);var result=store.status(state:state),profiles=state["agents"] as? [[String:Any]] ?? []
+        try memory.synchronize(raw);_ = try store.policy(raw);let state=try BuddyAgentMemory.overlay(raw,support:support);var result=store.status(state:state,plan:planConversations()),profiles=state["agents"] as? [[String:Any]] ?? []
         let settings=try BuddyAISettings(support:support).current(state["conversationWorkspace"] as! String),available=settings.claudeEnabled && keyReader(state["conversationWorkspace"] as! String) != nil
         if !available {for i in profiles.indices where profiles[i]["learningEnabled"] as? Bool != false {profiles[i]["learningError"]="Connect Claude in AI provider settings to learn preferences automatically. Your current instructions stay saved."}}
         // The worker's top-level `error` key is a transport failure. Keep a
@@ -41,7 +43,7 @@ import Foundation
         // An agent sees its own work. The supervisor and the agent's manager also see the work of agents that share it; no other teammate does.
         let policy=try store.policy(raw),observed=try store.observed(raw,jobs:jobs,now:now),overseer=actor==policy["supervisorId"] as? String,managed=Self.managed(by:actor,in:raw)
         let allowed=observed.filter{record in let id=record["agentId"] as? String ?? "";return (id==actor || ((overseer || managed.contains(id)) && store.configuration(policy,agent:id)["participates"] as? Bool != false)) && (target==nil || id==target)}
-        out.removeValue(forKey:"profiles");out.removeValue(forKey:"updates");out.removeValue(forKey:"agentMessages");out.removeValue(forKey:"agentMessageRevision")
+        out.removeValue(forKey:"profiles");out.removeValue(forKey:"updates");out.removeValue(forKey:"agentMessages");out.removeValue(forKey:"groupMessages");out.removeValue(forKey:"agentMessageRevision")
         out["automaticClaudeUsage"]=["dailyLimitUSD":out.removeValue(forKey:"dailyLimitUSD") ?? NSNull(),"sharedAcrossAgents":true,"appliesTo":["team_checkins","preference_learning"],"excludes":["chat_replies","background_tasks","scheduled_tasks"],"dailyUsage":out.removeValue(forKey:"daily") ?? [:]]
         let visible=Set(allowed.compactMap{$0["agentId"] as? String})
         out["observed"]=(out["observed"] as? [[String:Any]] ?? []).filter{visible.contains($0["agentId"] as? String ?? "")}
@@ -89,7 +91,7 @@ import Foundation
         try memory.synchronize(raw);let state=try BuddyAgentMemory.overlay(raw,support:support),w=state["conversationWorkspace"] as! String
         let action=args["action"] as? String ?? "status",agents=state["agents"] as? [[String:Any]] ?? []
         if let actor {guard agents.contains(where:{$0["id"] as? String==actor}) else{throw BuddyWorkerFailure(message:"This agent is no longer available.")}}
-        if action=="messages" {guard actor==nil else{throw BuddyWorkerFailure(message:"The full agent-message history is available in Buddy's user interface.")};return try store.messages(state:state,agent:args["agentId"] as? String,before:args["before"] as? String,exchangeIDs:args["exchangeIds"] as? [String])}
+        if action=="messages" {guard actor==nil else{throw BuddyWorkerFailure(message:"The full agent-message history is available in Buddy's user interface.")};return try store.messages(state:state,agent:args["agentId"] as? String,before:args["before"] as? String,exchangeIDs:args["exchangeIds"] as? [String],plan:planConversations())}
         if action=="configure" {guard actor==nil else{throw BuddyWorkerFailure(message:"Change team-wide settings in Workspace settings → Teamwork & updates.")};_ = try store.setPolicy(args,state:state)}
         else if action=="set_proactive" {
             let id=actor ?? args["agentId"] as? String ?? ""
@@ -232,7 +234,7 @@ import Foundation
         active=job;runID=UUID().uuidString;started=now;providerRevision=settings.revision(provider)
         let input=job["input"] as? [String:Any] ?? [:],kind=job["kind"] as! String,agent=(state["agents"] as! [[String:Any]]).first{$0["id"] as? String==id}!
         let modelName=BuddyAgentMemory.privateText(agent["name"] as? String ?? "Buddy"),modelRole=BuddyAgentMemory.privateText(agent["role"] as? String ?? ""),modelDescription=BuddyAgentMemory.privateText(agent["description"] as? String ?? "")
-        let instructions=kind=="memory" ? BuddyAgentMemory.instructions:Self.instructions(kind:kind)+"\n"+BuddyAutonomy.clock()+"\nAgent role:\(modelRole)\nUser's current instructions: \(modelDescription)\n"+BuddyAgentMemory.privateText(BuddyAgentMemory.guidance(agent))
+        let instructions=kind=="memory" ? BuddyAgentMemory.instructions:Self.instructions(kind:kind)+"\n"+BuddyAutonomy.clock()+"\n"+BuddyVoice.plain+"\nAgent role:\(modelRole)\nUser's current instructions: \(modelDescription)\n"+BuddyAgentMemory.privateText(BuddyAgentMemory.guidance(agent))
         let prompt=String(data:try JSONSerialization.data(withJSONObject:input),encoding:.utf8)!
         if provider=="claude" {
             let root=support.appendingPathComponent("TeamMonitor/"+runID!,isDirectory:true);try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])

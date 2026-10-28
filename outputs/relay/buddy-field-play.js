@@ -23,6 +23,8 @@
   ];
   // A pattern forms over FORM seconds, holds, fades, and the field rests for GAP before the next one.
   const FORM=5,HOLD=10,FADE=5,GAP=3,CYCLE=FORM+HOLD+FADE+GAP;
+  // Off for now (27 Oct: the person asked for the sidebar background to stop forming patterns, keeping the code). true brings them back.
+  const PATTERNS=false;
   function saverAt(sv,t,random=Math.random){
     if(!sv)sv={idx:Math.floor(random()*PATS.length),t0:t};
     if(t-sv.t0>CYCLE){sv.idx=(sv.idx+1+Math.floor(random()*(PATS.length-1)))%PATS.length;sv.t0=t;}
@@ -147,8 +149,8 @@
       // Rows know when they carry an unread count, so the snippet leaves room for it.
       for(const [id,el] of rowEls)el.classList.toggle('field-unread',unreadOf(id)>0);
 
-      // 1. patterns forming and dissolving behind everything
-      if(!calm){
+      // 1. patterns forming and dissolving behind everything (off for now: PATTERNS)
+      if(PATTERNS&&!calm){
         const {sv,k}=saverAt(state.sv,t);state.sv=sv;
         saverCells(sv.idx,k,cols,rows,state.asleep?.075:.042,(i,j,v)=>put(i,j,v,NEU));
       }
@@ -267,7 +269,7 @@
     },true);
   }
 
-  const api={PATS,CYCLE,FORM,HOLD,FADE,GAP,saverAt,saverCells,GLYPH,countText,glyphWidth,glyphCells,makeRoots,GROW,BURST,cloudCells,SLEEP_AFTER,extension,state,install,wakeAgents};
+  const api={PATS,PATTERNS,CYCLE,FORM,HOLD,FADE,GAP,saverAt,saverCells,GLYPH,countText,glyphWidth,glyphCells,makeRoots,GROW,BURST,cloudCells,SLEEP_AFTER,extension,state,install,wakeAgents};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   root.BuddyFieldPlay=api;
   if(typeof document!=='undefined')install(root.BuddyFigures);

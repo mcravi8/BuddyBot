@@ -20,7 +20,7 @@ import Foundation
         let own = BuddyAutonomy.supervision(agent: "chief", supervisor: "chief", name: "Chief")
         require(own.hasPrefix("You supervise this team.") && own.contains("Decide everything outside the user list yourself and record why") && own.contains("A teammate writing \"needs the user's OK\" does not make something a user item."), "the supervisor is told it decides for the team: \(own)")
         let other = BuddyAutonomy.supervision(agent: "forge", supervisor: "chief", name: "Chief")
-        require(other == "Your supervisor is Chief. Questions you cannot decide go to them (buddy_request_decision in background work; by name in chat). Never end a reply or result with a question to the user unless it is on the user list.", "a teammate is told to ask its supervisor by name: \(other)")
+        require(other == "Your supervisor is Chief. Questions you cannot decide go to them (buddy_request_decision in background work); to tell or ask them anything else, from a chat or a task, use buddy_team message. Never end a reply or result with a question to the user unless it is on the user list.", "a teammate is told to ask its supervisor by name: \(other)")
         require(BuddyAutonomy.chatGuidance(agent: "forge", supervisor: "chief", name: "Chief").hasPrefix(policy + "\n" + other + "\nTime: ") && BuddyAutonomy.chatGuidance(agent: "chief", supervisor: "chief", name: "Chief").hasPrefix(policy + "\n" + own + "\nTime: "), "chat guidance is the policy, the agent's own supervision line, then the person's clock")
 
         // 3. Finding the supervisor: the team-monitor policy first, then the manager of a group the agent is in.
@@ -73,5 +73,14 @@ import Foundation
         require(winter.contains("(PST)") && winter.contains("Tuesday, December 1, 2026, 12:00 PM"), "standard time is named in winter: \(winter)")
         require(BuddyAutonomy.chatGuidance(agent: "forge", supervisor: nil, name: nil).contains("the \(TimeZone.current.identifier) time zone"), "every chat prompt carries this Mac's own time zone")
         print("PASS: every prompt gives the person's time zone and local time, and says Buddy's UTC stamps are converted before they reach the person")
+
+        // 6. What the person reads is a plain message, not the team's shorthand ("Chief: I sign off on S02c C1–C6…", "S02a remains PARTIAL").
+        let plain = BuddyVoice.plain, result = BuddyVoice.result
+        for phrase in ["this is a group chat, like Slack", "the point first, usually one to three sentences", "what happened, what it means for the user, and what happens next", "Only when something is truly the user's to do, end with that one thing", "No headings, tables, bullet lists or bold unless the user asks; give more detail only when they ask for it", "(S04b, D-58, C1–C6, E4)", "PARTIAL or PASS", "task or plan IDs, hashes, file paths", "Never address a teammate"] {
+            require(plain.contains(phrase), "the plain-language rule says \"\(phrase)\"")
+        }
+        require(result.contains("First, a message to the user of one or two short sentences") && result.contains("a line with only --- and under it what your supervisor and teammates need") && result.contains("each choice you made with its reason"), "a result is the message, then a line of three dashes and the details: \(result)")
+        require(BuddyAutonomy.chatGuidance(agent: "forge", supervisor: "chief", name: "Chief").hasSuffix("\n" + plain) && policy.contains("state the choice and its reason in one line (in a task result, under its details)"), "every chat prompt ends with the plain-language rule, and a choice's reason goes with the details")
+        print("PASS: every chat writes to the person in plain sentences, and a task result puts the team's details after a line of three dashes")
     }
 }

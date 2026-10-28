@@ -1,9 +1,9 @@
 import Foundation
 
-/// Agents are drawn as halftone figures: four shapes in seven inks. Saved workspaces and models that still use the
-/// original 3D shape names are accepted and become the figure that replaced them.
+/// Agents are drawn as fold figures: seven shapes in seven inks ("sphere" is the circle, "capsule" the sideways pill). Saved workspaces and
+/// models that still use the original 3D shape names are accepted and become the figure that replaced them.
 enum BuddyAvatar {
-    static let shapes = ["diamond", "sphere", "hex", "pill"]
+    static let shapes = ["square", "sphere", "hex", "pill", "capsule", "arch", "diamond"]
     static let colors = ["lilac", "blue", "peach", "mint", "red", "gold", "cobalt"]
     static let legacyShapes = ["star": "diamond", "pebble": "sphere", "cube": "hex", "clover": "pill"]
     static func shape(_ value: String) -> String? { let id = legacyShapes[value] ?? value; return shapes.contains(id) ? id : nil }
@@ -121,7 +121,7 @@ struct BuddyAgentProposal: Codable {
         let current = try state(scope.workspace)
         let agents = (current["agents"] as? [[String: Any]] ?? []).map { ["id": $0["id"] ?? "", "name": $0["name"] ?? "", "role": $0["role"] ?? ""] }
         let suggestions = try list(scope.workspace).map { ["name": ($0["draft"] as? [String: Any])?["name"] ?? "", "status": $0["status"] ?? "pending"] }
-        let data = try JSONSerialization.data(withJSONObject: ["registeredAgents": agents, "suggestions": suggestions])
+        let data = try JSONSerialization.data(withJSONObject: ["registeredAgents": agents, "suggestions": suggestions], options: .sortedKeys)
         return "Actual Buddy team and suggestion decisions (context only): " + String(data: data, encoding: .utf8)!
     }
     func propose(_ scope: BuddyProposalScope, executionRunId: String, callId: String, arguments: [String: Any]) throws -> [String: Any] {

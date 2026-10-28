@@ -24,12 +24,13 @@ for line in sys.stdin:
         assert p['model'] in ['gpt-alpha','gpt-beta'], p
         assert 'Selected model: '+p['model'] in runtime.get(p['threadId'],''), runtime
         assert 'Buddy provides buddy_coding_session' in runtime.get(p['threadId'],''), runtime
+        assert 'search_service_web_run' not in runtime.get(p['threadId'],''), 'no web search connected, so none is named'
         assert p['effort'] == ('medium' if p['model']=='gpt-alpha' else 'low'), p
         seq += 1; turn='turn-'+str(seq); tid=p['threadId']
         result = {'model':p['model'], 'thread':tid, 'context':'\n'.join(x.get('text','') for x in p['input'])}
         out({'id':m['id'],'result':{'turn':{'id':turn,'status':'inProgress'}}})
         out({'method':'item/completed','params':{'threadId':tid,'turnId':turn,'item':{'type':'agentMessage','id':'answer-'+turn,'phase':'final_answer','text':json.dumps(result)}}})
         out({'method':'turn/completed','params':{'threadId':tid,'turn':{'id':turn,'status':'completed'}}}); continue
-    elif method not in ['initialize','initialized','thread/inject_items','thread/unsubscribe','turn/interrupt']:
+    elif method not in ['initialize','initialized','thread/inject_items','thread/unsubscribe','turn/interrupt','thread/archive','thread/unarchive']:
         raise AssertionError(method)
     if 'id' in m: out({'id':m['id'],'result':result})

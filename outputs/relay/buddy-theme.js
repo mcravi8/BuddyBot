@@ -7,9 +7,9 @@
   const resolve=(choice,systemDark)=>{const c=normalize(choice);return c==='system'?(systemDark?'dark':'light'):c;};
   // [choice, label, sidebar, page, text bars, card, quiet bars, accent dot] for the little window previews.
   const PREVIEWS=[
-    ['light','Light','#f4f3ef','#fbfaf8','#141414','#ffffff','rgba(20,20,20,.18)','#8a63d2'],
+    ['light','Light','#ffffff','#ffffff','#111111','#f5f5f5','rgba(0,0,0,.18)','#8a63d2'],
     ['dark','Dark','#191918','#121211','#f2f0ea','#262624','rgba(255,255,255,.2)','#b9a0eb'],
-    ['system','Match system','linear-gradient(90deg,#f4f3ef 50%,#191918 50%)','linear-gradient(90deg,#fbfaf8 50%,#121211 50%)','#8d8c86','rgba(141,140,134,.4)','rgba(141,140,134,.4)','#8a63d2']
+    ['system','Match system','linear-gradient(90deg,#ffffff 50%,#191918 50%)','linear-gradient(90deg,#ffffff 50%,#121211 50%)','#8d8c86','rgba(141,140,134,.4)','rgba(141,140,134,.4)','#8a63d2']
   ];
   let host=null,mq=null;
   const systemDark=()=>!!(root.matchMedia&&root.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -21,7 +21,7 @@
     el.dataset.theme=theme;el.dataset.appearance=choice;el.style.colorScheme=theme;
     // The page reads this before anything else loads, so it starts in the right theme instead of flashing the other one.
     try{localStorage.setItem('buddy.appearance',choice);}catch{}
-    const meta=document.querySelector('meta[name=theme-color]');if(meta)meta.content=theme==='dark'?'#121211':'#fbfaf8';
+    const meta=document.querySelector('meta[name=theme-color]');if(meta)meta.content=theme==='dark'?'#121211':'#ffffff';
     root.BuddyFigures?.setDark(theme==='dark');
     try{Promise.resolve(root.BuddyDesktop?.setAppearance?.(choice)).catch(()=>{});}catch{}
     return theme;

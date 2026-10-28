@@ -108,6 +108,15 @@ enum BuddyWorkerMailCompletion {
 }
 
 enum BuddyWorkerSignInPolicy {
+    /// The person named the Google account for this task (`account`, from their own words), it is signed in to Buddy's Chrome, and the site
+    /// offers Google: Buddy signs in with it itself, asking nobody. The browser picks only that account's tile and stops for passwords,
+    /// verification challenges, permission screens and new accounts. (RunPod, 23 Oct: the user named the account, it was signed in, and they
+    /// still had to sign in by hand.)
+    static func pinnedGoogle(job:[String:Any],plan:[String:Any],signedIn:[String])->Bool {
+        guard plan["mode"] as? String=="signin",plan["googleAvailable"] as? Bool==true,let origin=plan["origin"] as? String,let url=URL(string:origin),url.scheme=="https",url.host != nil,
+              let pin=BuddyAccountPin.normalized(job["account"] as? String) else{return false}
+        return signedIn.contains(pin)
+    }
     static func reuseGoogle(job:[String:Any],plan:[String:Any],jobs:[[String:Any]])->Bool {
         guard plan["mode"] as? String=="signin",plan["googleAvailable"] as? Bool==true,let origin=plan["origin"] as? String,let url=URL(string:origin),url.scheme=="https",url.host != nil,let workspace=job["workspace"] as? String,let agent=(job["browserAgentId"] ?? job["agentId"]) as? String,job["browserOrigin"]==nil || job["browserOrigin"] as? String==origin else{return false}
         return jobs.contains{prior in
@@ -263,7 +272,8 @@ enum BuddyAccountPin {
 /// says which site it is on; never "the website". A step saved before steps named their page uses the one page its task's own words name.
 enum BuddyWebStep {
     /// The steps done on a page in Buddy's Chrome, and with the file step every step the person finishes with Done.
-    static let pageNeeds: Set<String> = ["signin", "captcha", "verification"]
+    /// "payment": a sign-up Buddy stopped because it asks for money (Buddy never pays); the person does it themselves, or Skips it.
+    static let pageNeeds: Set<String> = ["signin", "captcha", "verification", "payment"]
     static let needs: Set<String> = pageNeeds.union(["file"])
     /// A real public https page, as given, or nil: no other scheme, no user name or password in it, and no local, private-network or bare
     /// IP host. (The browser checks where the name really leads before it opens anything.)
@@ -314,12 +324,17 @@ enum BuddyWebStep {
         switch need {
         case "captcha": return "Finish the CAPTCHA on \(site)"
         case "verification": return "Finish verifying on \(site)"
+        case "payment": return "\(site) asks for payment"
         case "file": return "Save \(what(target)) from \(site)" + (folder(of: target).map { " into \($0)" } ?? "")
         default: return "Sign in to \(site)" + (account.map { " as \($0)" } ?? "")
         }
     }
     static func title(of job: [String: Any]) -> String {
         let point = job["checkpoint"] as? [String: Any] ?? [:], need = point["need"] as? String ?? ""
+        // A sign-up Buddy stopped for money says which kind: a card, or a trial that becomes paid.
+        if need == "payment", let site = host(page(of: job) ?? site(of: job)) {
+            return point["money"] as? String == "trial" ? "This sign-up on \(site) starts a free trial that becomes paid" : "This sign-up on \(site) asks for payment details"
+        }
         return title(need: need, page: page(of: job) ?? site(of: job), account: need == "signin" ? point["account"] as? String : nil, target: point["target"] as? String)
     }
     static func what(_ target: String?) -> String { (target ?? "").lowercased().hasSuffix(".pdf") ? "the PDF" : "the file" }
@@ -333,12 +348,25 @@ enum BuddyWebStep {
         let need = point["need"] as? String ?? ""
         let head = title(need: need, page: point["url"] as? String, account: need == "signin" ? point["account"] as? String : nil, target: point["target"] as? String)
         let what = (point["instruction"] as? String).map { " " + ($0.hasSuffix(".") ? $0 : $0 + ".") } ?? ""
-        return head + "." + what + (need == "file" ? " Open the page, save it there, then press Done." : " Open the page, then press Done.")
+        let file = point["download"] as? Bool == true ? " Open the page and sign in if it asks, then press Done: Buddy downloads it there with your sign-in. Or save it there yourself, then press Done."
+            : " Open the page, save it there, then press Done."
+        return head + "." + what + (need == "file" ? file : " Open the page, then press Done.")
     }
     /// One line of plain text, up to 300 characters; nil when empty.
     static func line(_ raw: String?) -> String? {
         let text = (raw ?? "").components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
         return text.isEmpty ? nil : String(text.prefix(300))
+    }
+    /// Why a download Buddy made for a file step can't be saved there, or nil: a web page in its place (a sign-in form, a CAPTCHA), an empty
+    /// file, or for a .pdf path something that isn't a PDF. The browser checks the same before it writes anything; this is checked again here.
+    static func downloadRefusal(_ data: Data, path: String) -> String? {
+        let start = String(decoding: data.prefix(1024), as: UTF8.self)
+        if data.isEmpty { return "The website sent an empty file. Nothing was saved." }
+        if start.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}"))).range(of: #"^<(!doctype html|html|head|body)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return "The website sent a web page instead of the file, most likely a sign-in page or a CAPTCHA. Nothing was saved."
+        }
+        if (path as NSString).pathExtension.lowercased() == "pdf", !start.contains("%PDF-") { return "The website sent something that is not a PDF. Nothing was saved." }
+        return nil
     }
     /// A relative, non-hidden path inside a connected folder, with the file name; nil for anything else.
     static func path(_ raw: String?) -> String? {
@@ -360,31 +388,109 @@ enum BuddyWebStep {
         let doing = need == "captcha" ? "solve the CAPTCHA" : need == "verification" ? "verify" : need == "file" ? "get the file" : "sign in"
         return "Give the exact page: url must be the https address of the public page where the user must \(doing) (for example https://publisher.example/article/123), not a site's name or a local address. Buddy opens exactly that page for them. Nothing was asked of the user yet."
     }
-    static let codingRefusal = "A coding session can't use Buddy's Chrome or anything signed in there, so a sign-in, CAPTCHA or verification done in Chrome never lets your commands through. If a site blocks a download, call buddy_checkpoint with need file, url (the exact page), folderId (a connected folder from buddy_list_folders) and path (where in that folder the user saves it, with the file name); or ask for the one fact you need from the page with buddy_request_decision. Nothing was asked of the user yet."
+    static let codingRefusal = "Your coding session's own commands can't use Buddy's Chrome or anything signed in there, so a sign-in, CAPTCHA or verification step is never yours to ask for. If a site blocks a download, call buddy_browser_fetch with url (the file's own address, such as the PDF link) and saveAs: Buddy's Chrome fetches it with the user's sign-ins into your project, and if the site shows a CAPTCHA or a sign-in, Buddy itself asks the user to finish it and saves the file when they press Done. Only if buddy_browser_fetch says it can't, ask for the file with buddy_checkpoint need file (url, folderId, path), or for the one fact you need with buddy_request_decision. Nothing was asked of the user yet."
     static let folderRefusal = "Give folderId: a connected folder from buddy_list_folders where the user saves the file, not your own project copy (the user can't reach it). Nothing was asked of the user yet."
     static let pathRefusal = "Give path: where in that folder the user saves the file, relative and with the file name (for example stages/S01/sources/article.pdf). Nothing was asked of the user yet."
+    /// Sandboxed Mac apps (Word, Excel, PowerPoint) can't open a file outside their own folder without a prompt on the user's screen: on 23 Oct
+    /// Forge's Word export of the report hung on "Grant File Access" for hours while the team kept adding tasks to get a native Word check.
+    /// What every coding agent does before asking for anything on the person's list: find another way with what is already here.
+    static let lastResort = "Anything on the user's list (installing or changing anything on this Mac, sudo, signing in, reading secrets, sending data out, writing outside the project, spending money) is a last resort. First find a way with what is already here: the project and its packages, and the apps and tools already on this Mac (look with ls /Applications, which <tool>, or sdef <app> for what an app can do by AppleScript; an installed app can often do the job itself, driven by a project script). When the brief names a tool this Mac lacks, reach the same result with what is here, keep every check it asks for, and say so in your result; ask your supervisor with buddy_request_decision only when the result itself would differ. Ask for something on the list only when there is no other way, and say in its reason why there is none. Your supervisor reads such a request first and may answer with another way: take it."
+    static let macAppsGuidance = "Sandboxed Mac apps (Microsoft Word, Excel, PowerPoint and most App Store apps) can't open a file outside their own folder without a permission prompt on the user's screen, so a command that asks them to hangs until it is stopped. To check or export a document with such an app, write a short project script that copies the file into the app's own folder (~/Library/Containers/<its bundle id>/Data/Documents/buddy-<a name of yours>/; Word's bundle id is com.microsoft.Word), opens it there with open -g -a \"<App>\" <file>, waits until the app lists that document by its file name, drives the app by AppleScript referring to the document by that name (never active document: it may be one of the user's own open documents), exports (Word: save as <document> file name <path in that folder> file format format PDF), closes only that document without saving, and copies the result back into your project; then run the script (it goes to review). Never touch a document or window of the user's."
     /// The line every coding brief carries about a site that blocks a download.
-    static let codingGuidance = "A coding session can't use Buddy's Chrome or anything signed in there: a website that blocks a download (a CAPTCHA, a sign-in, a paywall) is never fixed by the user signing in, so never ask them to sign in or solve a CAPTCHA for your commands. Instead call buddy_checkpoint with need file, url (the exact page), folderId (a connected folder from buddy_list_folders, such as the project's) and path (where in that folder to save it, with the file name), then end the attempt; when you are resumed, check the file is there with buddy_list_files and bring it in with buddy_copy_into_project. If you need only one fact from that page, ask for exactly that fact with buddy_request_decision instead."
+    static let codingGuidance = "Your own commands can't use Buddy's Chrome or anything signed in there, but buddy_browser_fetch can: when a website blocks a download (a CAPTCHA, a sign-in, a paywall the user has access to, curl getting a web page instead of the file), call buddy_browser_fetch with url (the file's own address, such as the PDF link) and saveAs (where in your project, with the file name). Buddy's Chrome opens it with the user's sign-ins and saves the file into your project, and you get its path, size, type and sha256; then use it with your own file tools. If the site shows a CAPTCHA, a sign-in or another check, Buddy asks the user to finish it in Buddy's Chrome and fetches the file again when they press Done: end this attempt then, and you are resumed with a note naming the saved file. Never ask the user to sign in, solve a CAPTCHA or download a file by hand for your commands. Only if buddy_browser_fetch itself says it can't get the file, call buddy_checkpoint with need file, url, folderId (a connected folder from buddy_list_folders) and path, then end the attempt; when you are resumed, check the file with buddy_list_files and bring it in with buddy_copy_into_project. If you need only one fact from a page, ask for exactly that fact with buddy_request_decision instead."
     /// The note a task is resumed with after the person's Done on its step. `checked`: Buddy looked at the page again in the task's own
     /// session and it no longer asks for anything; `present`: whether Buddy sees the saved file at its path.
-    static func doneNote(_ job: [String: Any], checked: Bool, present: Bool?) -> String {
+    static func doneNote(_ job: [String: Any], checked: Bool, present: Bool?, downloaded: [String: Any]? = nil) -> String {
         let point = job["checkpoint"] as? [String: Any] ?? [:], need = point["need"] as? String ?? "", coding = job["kind"] as? String == "coding"
         let where_ = page(of: job) ?? site(of: job)
         let asked = String((point["question"] as? String ?? "").prefix(300))
         if need == "file" {
             let folder = point["folderId"] as? String ?? "", path = point["path"] as? String ?? "", target = point["target"] as? String ?? path
             let seen = present == true ? "Buddy sees a file there. " : present == false ? "Buddy doesn't see a file at that exact path yet: look in that folder with buddy_list_files for one saved under another name. " : ""
-            return "[Buddy] The user says they saved the file from \(where_ ?? "the page") as \(target) (folderId \(folder), path \(path)). " + seen
+            let how = downloaded.map { got in "[Buddy] Buddy downloaded the file from \(host(got["url"] as? String) ?? where_ ?? "the page") with what the user signed in to in Buddy's Chrome, and saved it as \(target) (folderId \(folder), path \(path); \(got["bytes"] as? Int ?? 0) bytes, sha256 \(got["sha256"] as? String ?? "")). " }
+                ?? "[Buddy] The user says they saved the file from \(where_ ?? "the page") as \(target) (folderId \(folder), path \(path)). "
+            return how + seen
                 + "Check it with buddy_list_files" + (coding ? " and bring it into the project with buddy_copy_into_project" : "") + " before using it, then continue. If it isn't there, ask again with buddy_checkpoint need file."
         }
+        if need == "payment" {
+            return "[Buddy] The user handled the payment step on \(host(where_) ?? "the website") themselves in Buddy’s Chrome (Buddy never pays). Reopen \(where_ ?? "the website") and check its actual state before continuing; never enter payment details or start anything paid yourself."
+        }
         if coding {
-            return "[Buddy] The user says they finished the step on \(where_ ?? "the website they were asked about"): \(asked) Your coding session's commands can't use what is signed in to Buddy's Chrome, so don't retry the blocked download as it was. If you still need something from that page, ask the user to save it into a connected folder with buddy_checkpoint need file (url, folderId, path), or ask for the one fact you need with buddy_request_decision."
+            return "[Buddy] The user says they finished the step on \(where_ ?? "the website they were asked about"): \(asked) Your coding session's commands can't use what is signed in to Buddy's Chrome, so don't retry the blocked download as it was. If you still need a file from that site, fetch it with buddy_browser_fetch, which uses Buddy's Chrome and the user's sign-ins; only if that says it can't, ask the user to save it into a connected folder with buddy_checkpoint need file (url, folderId, path), or ask for the one fact you need with buddy_request_decision."
         }
         if checked {
             return need == "signin" ? "[Buddy] The user finished the sign-in step in Buddy’s Chrome window, and Buddy checked that \(site(of: job) ?? where_ ?? "the website") is signed in. Reopen \(where_ ?? "the website") and continue."
                 : "[Buddy] The user finished the step on \(where_ ?? "the website") in Buddy’s Chrome window, and Buddy checked that the page no longer asks for anything. Reopen it and continue."
         }
         return "[Buddy] The user says they finished the step they were asked to do" + (where_.map { " on \($0)" } ?? "") + ": \(asked) Reopen " + (where_ ?? "the website") + " and check its actual state before continuing."
+    }
+}
+
+/// buddy_browser_fetch: a file from the web, fetched by Buddy's Chrome in the task's own page with the person's sign-ins (and their pinned
+/// account), through the network guard, GET only, and saved into the task's project (a coding session) or a folder the task may write to,
+/// never over another file. The model hears only what was saved. A CAPTCHA, a sign-in or an access check becomes the person's web step,
+/// whose Done fetches the file again in the same Chrome and resumes the task with a note naming the saved file.
+enum BuddyBrowserFetch {
+    /// The largest file one fetch saves, and how many files one task may save this way.
+    static let maximumBytes = 200 * 1024 * 1024
+    static let perTask = 25
+    static func tool(coding: Bool) -> [String: Any] {
+        let place = coding ? "into your project (where your own commands and file tools see it)" : "into your task folder, or into a connected folder you name with folderId"
+        var properties: [String: Any] = [
+            "url": ["type": "string", "description": "The file's own http(s) address (such as the PDF link), or the page whose own download gives the file."],
+            "saveAs": ["type": "string", "description": coding ? "Where in your project, relative, with the file name (for example sources/article.pdf)." : "Where in the folder, relative, with the file name (for example sources/article.pdf)."],
+            "reason": ["type": "string", "maxLength": 300, "description": "One line: what the file is for."],
+            "account": ["type": "string", "description": "Optional: the email address of the account to open it as (a Google file, say). A task with its own account always uses that one."]]
+        if !coding { properties["folderId"] = ["type": "string", "description": "Optional: a connected folder from buddy_list_folders. Left out, the file goes into your task folder."] }
+        return ["type": "function", "name": "buddy_browser_fetch",
+                "description": "Fetch one file (a PDF, CSV, dataset, image or archive) from the web with Buddy's Chrome, which has the user's own sign-ins, and save it \(place). Use it whenever a website blocks a plain download (a CAPTCHA, a sign-in, a paywall the user has access to) or you need a file that only a signed-in browser gets. It only opens the address you give (GET): it never fills or submits anything. Returns the saved file's path, size, type and sha256, never the page, cookies or headers. An existing file is never replaced: Buddy adds a number to the name. If the site shows a CAPTCHA, a sign-in or another check, Buddy asks the user to finish it in Buddy's Chrome and saves the file when they press Done: end this attempt then with one short sentence; you are resumed with a note naming the saved file. Files up to 200 MB. Needs internet access.",
+                "inputSchema": ["type": "object", "additionalProperties": false, "properties": properties, "required": ["url", "saveAs", "reason"]]]
+    }
+    /// A public http(s) address as given, or nil: no other scheme, no user name or password, no spaces. (The browser checks where the name
+    /// really leads, and every request it makes, before anything is fetched.)
+    static func address(_ raw: String?) -> String? {
+        guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty, text.count <= 2048, !text.contains(where: { $0.isWhitespace }),
+              let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.user == nil, url.password == nil, let host = url.host, !host.isEmpty else { return nil }
+        return url.absoluteString
+    }
+    static let addressRefusal = "Give url: the file's public http or https address (such as the PDF link). Nothing was fetched."
+    static let pathRefusal = "Give saveAs: a relative path with the file name (for example sources/article.pdf), with no hidden names, no .. and no absolute path. Nothing was fetched."
+    static func offline(_ name: String) -> String { "\(name) has no internet access (Web research is off for this agent), so Buddy's Chrome can't fetch anything for it. Nothing was fetched. Ask the user to turn on internet access for \(name), or ask for the file with buddy_request_decision." }
+    /// What stands in the way, in a few words.
+    static func what(_ kind: String) -> String { kind == "captcha" ? "a CAPTCHA" : kind == "signin" ? "a sign-in page" : "an access check" }
+    /// The web step's one line: what to do on the page, and what Buddy does next.
+    static func instruction(kind: String, site: String, file: String) -> String {
+        let doing = kind == "captcha" ? "Complete the CAPTCHA on \(site)" : kind == "signin" ? "Sign in on \(site)" : "Finish what \(site) asks (a check or a sign-in)"
+        return "\(doing); Buddy will save \(file) when you press Done."
+    }
+    /// The task's own type for what the browser said the file is, or a plain one.
+    static func contentType(_ value: Any?) -> String {
+        guard let text = value as? String, text.count <= 200, text.range(of: #"^[a-z0-9.+-]+/[a-z0-9.+-]+$"#, options: [.regularExpression, .caseInsensitive]) != nil else { return "application/octet-stream" }
+        return text.lowercased()
+    }
+    /// What the model hears when the file is saved: where, how big, what, its sha256. Nothing of the page, cookies or headers.
+    static func receipt(_ saved: [String: Any], coding: Bool, folderName: String) -> [String: Any] {
+        let path = saved["path"] as? String ?? ""
+        var out: [String: Any] = [:]
+        for key in ["path", "folderId", "bytes", "contentType", "sha256", "url"] { out[key] = saved[key] ?? NSNull() }
+        out["saved"] = true
+        out["note"] = coding ? "Saved in your project at \(path). Use it with your own tools; don't download it again." : "Saved as \(path) in \(folderName) (folderId \(saved["folderId"] as? String ?? "")). Read it with buddy_read_file if you need what it says."
+        return out
+    }
+    /// The note a task is resumed with once the person's Done brought the file.
+    static func doneNote(_ job: [String: Any], saved: [String: Any], fetch: [String: Any]) -> String {
+        let coding = job["kind"] as? String == "coding", point = job["checkpoint"] as? [String: Any] ?? [:]
+        let site = BuddyWebStep.host(point["url"] as? String) ?? "the website", kind = fetch["kind"] as? String ?? "captcha"
+        let finished = kind == "captcha" ? "the CAPTCHA" : kind == "signin" ? "the sign-in" : "the check"
+        let path = saved["path"] as? String ?? "", facts = "\(saved["bytes"] as? Int ?? 0) bytes, \(saved["contentType"] as? String ?? ""), sha256 \(saved["sha256"] as? String ?? "")"
+        let fetched = "[Buddy] The user finished \(finished) on \(site) in Buddy's Chrome, and Buddy fetched \(fetch["url"] as? String ?? "the file") with Buddy's Chrome: "
+        if coding { return fetched + "it is saved in your project at \(path) (\(facts)). Use it from there with your own tools; don't download it again." }
+        return fetched + "it is saved as \(path) in \(fetch["folderName"] as? String ?? "your task folder") (folderId \(saved["folderId"] as? String ?? ""); \(facts)). Continue with it; don't download it again."
+    }
+    /// The note when the person finished the step but the fetch then failed for another reason: the task goes on and decides.
+    static func failedNote(_ job: [String: Any], fetch: [String: Any], reason: String) -> String {
+        let site = BuddyWebStep.host((job["checkpoint"] as? [String: Any])?["url"] as? String) ?? "the website"
+        return "[Buddy] The user finished the step on \(site), but Buddy's Chrome still couldn't fetch \(fetch["url"] as? String ?? "the file"): \(reason) Nothing was saved. Don't ask the user to download it by hand; try the file's own address with buddy_browser_fetch, or ask for the one fact you need with buddy_request_decision."
     }
 }
 
@@ -513,7 +619,7 @@ struct BuddyAttempt {
             let rows = try actionStates(of: jobs[i]["id"] as? String ?? "")
             let reviews = Self.settled(jobs[i]["reviews"] as? [[String: Any]] ?? [], rows: rows, pending: "expired")
             jobs[i]["reviews"] = reviews
-            let unsure = reviews.filter { $0["status"] as? String == "uncertain" }
+            let unsure = reviews.filter { $0["status"] as? String == "uncertain" && !Self.checkedByTeam($0) }
             jobs[i]["status"] = "interrupted"
             jobs[i]["stopCause"] = "worker.restart"
             if unsure.isEmpty {
@@ -595,6 +701,11 @@ struct BuddyAttempt {
         var merged = old; merged.merge(Self.decimals(values)) { _, new in new }; merged["updatedAt"] = ISO8601DateFormatter().string(from: Date())
         // A copy of a review that arrives late (from the connection service) must not move an action backwards.
         if values["reviews"] != nil { merged = try keepingActionProgress(merged) }
+        // No task has a limit on how many commands it runs or reviews it asks for: what its record no longer keeps goes to its history file.
+        if values["commands"] != nil || values["reviews"] != nil {
+            var trimmed = merged; let moved = Self.overflow(&trimmed, from: old)
+            if moved.isEmpty || appendHistory(moved, task: id) { merged = trimmed }
+        }
         jobs[i] = merged
         let saved = merged
         // A run that finishes ends the older runs of the same work that stopped without finishing, in the same transaction.
@@ -607,6 +718,60 @@ struct BuddyAttempt {
         } catch { jobs[i] = old; throw error }
         for s in stale { jobs[s.index] = s.new }
         return jobs[i]
+    }
+    /// A task's record keeps its newest command receipts and settled reviews: what the page and the model are shown, and what keeps one task
+    /// under `rowLimit` however long it works. Older ones move, oldest first, to the task's history file (`historyFile`), one
+    /// {"kind": "command" | "review", "value": …} per line, and the record counts them (archivedCommands, archivedReviews). Receipts a caller
+    /// let go of (a Codex session keeps only its newest) go there too. A running command and an open review (waiting, approved, being sent,
+    /// unconfirmed) always stay, and so does a review whose outcome changed in this update, so its action record sees the change first.
+    static let keptCommands = 100, keptReviews = 150
+    static let settledReviews: Set<String> = ["completed", "cancelled", "declined", "not_sent", "expired"]
+    static func overflow(_ job: inout [String: Any], from old: [String: Any]) -> [[String: Any]] {
+        var moved: [[String: Any]] = []
+        if let given = job["commands"] as? [[String: Any]] {
+            var excess = given.count - keptCommands, kept: [[String: Any]] = []
+            for c in given { if excess > 0, c["id"] is String, c["status"] as? String != "running" { excess -= 1 } else { kept.append(c) } }
+            let keptIDs = Set(kept.compactMap { $0["id"] as? String })
+            var latest: [String: [String: Any]] = [:]; for c in given { if let id = c["id"] as? String { latest[id] = c } }
+            var seen = Set<String>(), count = 0
+            for c in (old["commands"] as? [[String: Any]] ?? []) + given {
+                guard let id = c["id"] as? String, !keptIDs.contains(id), seen.insert(id).inserted else { continue }
+                moved.append(["kind": "command", "value": latest[id] ?? c]); count += 1
+            }
+            if count > 0 { job["commands"] = kept; job["archivedCommands"] = (job["archivedCommands"] as? Int ?? 0) + count }
+        }
+        if let reviews = job["reviews"] as? [[String: Any]] {
+            var before: [String: String] = [:]
+            for r in old["reviews"] as? [[String: Any]] ?? [] { if let id = r["id"] as? String { before[id] = r["status"] as? String ?? "" } }
+            func settled(_ r: [String: Any]) -> Bool { settledReviews.contains(r["status"] as? String ?? "") }
+            var excess = reviews.filter(settled).count - keptReviews, kept: [[String: Any]] = [], count = 0
+            for r in reviews {
+                if excess > 0, settled(r), let id = r["id"] as? String, before[id] == r["status"] as? String { moved.append(["kind": "review", "value": r]); excess -= 1; count += 1 } else { kept.append(r) }
+            }
+            if count > 0 { job["reviews"] = kept; job["archivedReviews"] = (job["archivedReviews"] as? Int ?? 0) + count }
+        }
+        return moved
+    }
+    /// Where a task's older command receipts and reviews are kept: beside its files, never in a reply.
+    func historyFile(_ id: String) -> URL { directory.appendingPathComponent("Tasks/" + id + "/history.jsonl") }
+    /// Appends to a task's history file. False (and the record keeps everything) when it can't be written.
+    private func appendHistory(_ entries: [[String: Any]], task id: String) -> Bool {
+        guard UUID(uuidString: id) != nil else { return false }
+        var data = Data()
+        for entry in entries { guard JSONSerialization.isValidJSONObject(entry), let line = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]) else { return false }; data.append(line); data.append(10) }
+        let url = historyFile(id)
+        guard (try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])) != nil else { return false }
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+        var offset = 0
+        while offset < data.count {
+            let wrote = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress!.advanced(by: offset), data.count - offset) }
+            if wrote < 0 && errno == EINTR { continue }
+            guard wrote > 0 else { return false }
+            offset += wrote
+        }
+        return true
     }
     /// The older runs of the same work (the same plan task, else the same routine series or routine) that a run finishing now makes stale: ones that
     /// failed, were interrupted or paused, and that left nothing that may have been sent. They become cancelled, saying which run superseded them.
@@ -655,6 +820,16 @@ struct BuddyAttempt {
     func setPaused(_ value: Bool) throws {
         let old = paused; paused = value
         do { try db.transaction { try db.setMeta("paused", value ? "1" : "0") } } catch { paused = old; throw error }
+    }
+    /// How many tasks may run at once: the person's choice in Background work ("Run at once"), kept with the queue. Three until they choose.
+    static let runLimits = 1...6, defaultRunLimit = 3
+    var maxRunning: Int {
+        if let saved = (try? db.meta("maxRunning")).flatMap({ $0.flatMap(Int.init) }), Self.runLimits.contains(saved) { return saved }
+        return Self.defaultRunLimit
+    }
+    func setMaxRunning(_ value: Int) throws {
+        guard Self.runLimits.contains(value) else { throw BuddyWorkerFailure(message: "Choose how many tasks may run at once, from 1 to 6.", code: "invalid_input") }
+        try db.transaction { try db.setMeta("maxRunning", String(value)) }
     }
 
     // MARK: history
@@ -772,7 +947,7 @@ struct BuddyAttempt {
     /// Kinds of review that this app performs itself, recording "sending" before it starts, so for them "approved" really does mean "not sent
     /// yet". A connected-service request is sent by the connection service, whose ordering this app cannot fully vouch for, so an approved one
     /// is treated as possibly sent, like a review of any unknown kind.
-    private static let dispatchRecorded: Set<String> = ["browser", "authentication", "coding"]
+    private static let dispatchRecorded: Set<String> = ["browser", "authentication", "coding", "account", "service", "upload"]
     private static func kindOf(_ review: [String: Any]) -> String { review["kind"] as? String ?? "connection" }
 
     private static func canMove(from current: String, to next: String) -> Bool {
@@ -948,6 +1123,16 @@ struct BuddyAttempt {
         guard let all = try? actions(of: taskID), !all.isEmpty else { return "" }
         let lines = all.suffix(30).compactMap { action -> String? in
             let name = action.tool.isEmpty ? "an action" : "“\(action.tool)”"
+            // A request to a connected service: a new one is a new request, approved again (what it created is in the task's leases).
+            if action.kind == "service" {
+                switch action.state {
+                case "confirmed": return "- \(name): sent and answered. Do not send it again; what it created (if anything) is in this task's leases (buddy_service_api action leases)."
+                case "declined": return "- \(name): declined. Do not send it again unless asked."
+                case "not_sent": return "- \(name): the service refused it, or it was never sent. Nothing was created."
+                case "uncertain", "dispatched": return "- \(name): sent, but its answer never came. Check with a GET before trying it again."
+                default: return nil
+                }
+            }
             switch action.state {
             case "confirmed": return "- \(name): done" + (action.resolvedBy == "user" ? " (the user confirmed it went through). Do not repeat it." : ". Do not repeat it.")
             case "uncertain", "dispatched": return "- \(name): unconfirmed. It may or may not have gone through, and the user has not said. Do not repeat it; tell the user to check it."
@@ -997,6 +1182,14 @@ struct BuddyAttempt {
 
     // MARK: what needs you
 
+    /// Whether an action whose result wasn't confirmed can be checked by the team itself: a coding command Buddy read as working inside the
+    /// project (routine, project scripts, or one the supervisor read), whose effects are the project's own files and receipts. One that could
+    /// send data out, sign in or change the Mac stays the person's to check. On 25 Oct an approved Word export whose session ended early came
+    /// to the user as "check whether it went through", and kept the task from going on after a restart.
+    static func checkedByTeam(_ review: [String: Any]) -> Bool {
+        guard review["kind"] as? String == "coding", let kind = (review["assessment"] as? [String: Any])?["kind"] as? String else { return false }
+        return kind != "sensitive"
+    }
     /// `audience` is who has to act: "user" (the person) or "supervisor" (the agent the task names as its supervisor).
     struct DecisionSpec { let id: String, kind: String, title: String, question: String, label: String, payload: [String: Any]; var audience = "user" }
     /// The blockers a task's state implies right now, each with the identity that makes it the same blocker next time. One sign-in problem is one
@@ -1010,12 +1203,35 @@ struct BuddyAttempt {
         var out: [DecisionSpec] = []
         for review in job["reviews"] as? [[String: Any]] ?? [] {
             guard let reviewID = review["id"] as? String else { continue }
+            // A request still marked waiting on a task that has ended can't be answered any more (its run is gone): nothing to ask (23 Oct: a
+            // RunPod sign-in from a finished task stayed in Needs for days).
+            if review["status"] as? String == "pending", terminal.contains(status) { continue }
             let tool = (review["tool"] as? [String: Any])?["name"] as? String ?? "an action", auth = review["kind"] as? String == "authentication"
             switch review["status"] as? String ?? "" {
+            case "pending" where review["kind"] as? String == "account":
+                // An account Buddy would create (or a password it would reset) on one site: answered only in the agent's chat, with a click.
+                let site = (review["origin"] as? String).flatMap { URL(string: $0)?.host } ?? "a website", reset = review["purpose"] as? String == "reset"
+                out.append(DecisionSpec(id: "review:" + reviewID, kind: "signin", title: reset ? "Reset your password on \(site)?" : "Create an account on \(site)?",
+                                        question: reset ? "Answer in the chat: Reset password or Don’t." : "Answer in the chat: Create account or Don’t. Buddy never pays or starts a paid trial.", label: "Open chat", payload: ["taskId": id, "reviewId": reviewID]))
+            case "pending" where ["service", "upload"].contains(review["kind"] as? String ?? "") && !["supervisor", "screen"].contains(review["route"] as? String ?? ""):
+                // A change on a connected service (money, when the person said it can charge it), or files leaving the Mac for a machine: the
+                // person's, with what it costs at most by the agent's estimate.
+                if review["kind"] as? String == "upload" {
+                    let u = review["upload"] as? [String: Any] ?? [:]
+                    out.append(DecisionSpec(id: "review:" + reviewID, kind: "review", title: "Send files to \(u["host"] as? String ?? "a machine")?",
+                                            question: "\(u["agent"] as? String ?? "An agent") wants to send project files to the machine \(u["lease"] as? String ?? "it leased"). Approve or Disapprove in the task.", label: "Review", payload: ["taskId": id, "reviewId": reviewID]))
+                    continue
+                }
+                let r = review["request"] as? [String: Any] ?? [:], service = r["service"] as? String ?? "a service", cost = r["cost"] as? [String: Any]
+                let most = (cost?["maxCostUSD"] as? Double).map { "? At most " + String(format: "$%.2f", $0) } ?? "?"
+                out.append(DecisionSpec(id: "review:" + reviewID, kind: "review", title: "Allow a request to \(service)\(most)",
+                                        question: "\(r["agent"] as? String ?? "An agent") wants to send \(r["method"] as? String ?? "") \(r["path"] as? String ?? "") to \(service)" + (r["charges"] as? Bool == true ? ", which can charge you money" : "") + ". Approve or Disapprove in the task." + Self.screened(review),
+                                        label: "Review", payload: ["taskId": id, "reviewId": reviewID]))
             case "pending":
                 // A coding command Buddy judged routine is the team supervisor's to answer (`command_review`); the page shows it to the person
                 // only when the supervisor lane is not answering.
-                if review["route"] as? String == "supervisor", review["kind"] as? String == "coding" {
+                // One on the person's list the supervisor looks at first (`screen`) is its too, until it passes it on.
+                if ["supervisor", "screen"].contains(review["route"] as? String ?? ""), ["coding", "service"].contains(review["kind"] as? String ?? "") {
                     out.append(DecisionSpec(id: "review:" + reviewID, kind: "command_review", title: "Review: \(tool)", question: "Allow this exact command? " + ((review["assessment"] as? [String: Any])?["reason"] as? String ?? ""),
                                             label: "Review", payload: ["taskId": id, "reviewId": reviewID], audience: "supervisor"))
                     continue
@@ -1026,7 +1242,10 @@ struct BuddyAttempt {
                 var payload: [String: Any] = ["taskId": id, "reviewId": reviewID]
                 if auth, let signin = review["signinId"] as? String { payload["signinId"] = signin }
                 out.append(DecisionSpec(id: "review:" + reviewID, kind: auth ? "signin" : "review", title: auth ? (site.map { "Sign in to \($0)" } ?? "Sign-in needs your choice") : check ? "Check the work: \(title)" : "Review: \(tool)",
-                                        question: auth ? "Choose how to sign in to \(review["origin"] as? String ?? "this site") in the chat: type your password there, or open Chrome." : check ? (ask.isEmpty ? "Look at the work and say whether to continue." : ask) : "Allow this exact operation?", label: auth ? "Open chat" : check ? "Check work" : "Review", payload: payload))
+                                        question: auth ? "Choose how to sign in to \(review["origin"] as? String ?? "this site") in the chat: type your password there, or open Chrome." : check ? (ask.isEmpty ? "Look at the work and say whether to continue." : ask) : "Allow this exact operation?" + Self.screened(review), label: auth ? "Open chat" : check ? "Check work" : "Review", payload: payload))
+            case "uncertain" where Self.checkedByTeam(review):
+                // A project command whose result wasn't confirmed: the agent checks its files and receipts itself when the work goes on.
+                break
             case "uncertain":
                 out.append(DecisionSpec(id: "action:" + reviewID + ":unconfirmed", kind: "unconfirmed", title: "Check whether “\(tool)” went through",
                                         question: "Buddy stopped before it could confirm this. Look at the site or service, then say whether it went through.", label: "Check action", payload: ["taskId": id, "reviewId": reviewID]))
@@ -1040,7 +1259,7 @@ struct BuddyAttempt {
             } else if point?["need"] as? String == "credential", let profile = point?["profile"] as? String, !profile.isEmpty {
                 // A sign-in is always the person's. Its card opens the agent's chat, where a private field takes it straight to the Keychain.
                 let service = (point?["service"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "This service"
-                out.append(DecisionSpec(id: "credential:\(id):\(attempt):\(profile)", kind: "credential", title: "\(service) needs your sign-in", question: point?["question"] as? String ?? "Sign in to continue.",
+                out.append(DecisionSpec(id: "credential:\(id):\(attempt):\(profile)", kind: "credential", title: point?["secret"] as? String == "service" ? "Connect \(service)" : "\(service) needs your sign-in", question: point?["question"] as? String ?? "Sign in to continue.",
                                         label: "Sign in", payload: ["taskId": id, "profile": profile]))
             } else if let need = point?["need"] as? String, BuddyWebStep.needs.contains(need) {
                 // A step only the person can do, outside the chat (on a web page in Buddy's Chrome window, or a file saved from one): its chat
@@ -1066,11 +1285,20 @@ struct BuddyAttempt {
             }
         }
         if status == "paused" {
-            if job["blockedBy"] as? String == "limit" {
+            if job["blockedBy"] as? String == "remote" {
+                // Waiting for its command on a leased machine: Buddy's own work, which continues the task by itself. Nobody needs to act.
+            } else if job["blockedBy"] as? String == "limit" {
                 out.append(DecisionSpec(id: "limit:\(id):\(job["blockedAt"] as? String ?? "")", kind: "limit", title: "Daily limit reached", question: progress, label: "Open task", payload: ["taskId": id]))
             } else if !(cause.hasPrefix("user") || cause == "routine.paused" || cause == "superseded") {
                 out.append(DecisionSpec(id: "paused:\(id):\(attempt):\(cause.isEmpty ? "unknown" : cause)", kind: "paused", title: title, question: progress.isEmpty ? "This task stopped by itself." : progress, label: "Open task", payload: ["taskId": id], audience: watcher))
             }
+        }
+        // Something a lease created that Buddy can't delete by itself (its teardown keeps failing, or the create's answer didn't say what was
+        // created): the person's to check, until it is gone.
+        for alert in job["leaseAlerts"] as? [[String: Any]] ?? [] {
+            guard let lease = alert["id"] as? String else { continue }
+            out.append(DecisionSpec(id: "lease:" + lease, kind: "lease", title: "Check \(alert["service"] as? String ?? "the service"): Buddy couldn’t delete what this task created",
+                                    question: String((alert["text"] as? String ?? "").prefix(300)), label: "Open task", payload: ["taskId": id, "leaseId": lease]))
         }
         if status == "completed", !(job["reportsTo"] as? String ?? "").isEmpty, (job["acceptedAt"] as? String ?? "").isEmpty {
             let result = String((job["result"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))
@@ -1078,8 +1306,13 @@ struct BuddyAttempt {
         }
         return out
     }
+    /// The supervisor's note on a request it passed to the person (why there is no other way), for the person's card.
+    static func screened(_ review: [String: Any]) -> String {
+        guard let note = review["screenNote"] as? String, !note.isEmpty else { return "" }
+        return " \(review["screenedBy"] as? String ?? "The supervisor"): \(note)"
+    }
     /// Kinds kept equal to a task's state. `allowance` is no longer opened, but stays here so rows left from before are still resolved.
-    private static let derivedKinds = "('review', 'signin', 'waiting', 'allowance', 'stopped', 'unconfirmed', 'limit', 'paused', 'result', 'credential', 'mfa', 'command_review', 'step')"
+    private static let derivedKinds = "('review', 'signin', 'waiting', 'allowance', 'stopped', 'unconfirmed', 'limit', 'paused', 'result', 'credential', 'mfa', 'command_review', 'step', 'lease')"
     /// Keeps the open blockers of one task equal to what its state implies, in the transaction that saves it: new ones are opened, ones whose cause
     /// has ended are resolved, and each is an event, so a consumer can follow them.
     private static func syncDecisions(_ task: [String: Any], in db: BuddyOperationsDB) throws {
@@ -1091,8 +1324,14 @@ struct BuddyAttempt {
                                    [.text(id), .text(task["workspace"] as? String ?? ""), .text(task["agentId"] as? String ?? ""), .text(taskID), .text(spec.kind), .text(spec.title), .text(spec.question), .text(spec.label), .text((try? BuddyOperationsDB.encode(spec.payload)) ?? "{}"), .text(stamp()), .text(spec.audience)])
             if added > 0 { try appendEvent("decision.opened", task: task, attempt: task["attempt"] as? Int, cause: spec.kind, payload: ["id": id, "kind": spec.kind], in: db) }
         }
-        // The same blocker whose audience has changed (a supervisor was named, a question was routed) moves in place.
-        for (id, spec) in desired { if let current = open[id], current != spec.audience { try db.run("UPDATE decisions SET audience = ? WHERE id = ?", [.text(spec.audience), .text(id)]) } }
+        // The same blocker whose audience has changed (a supervisor was named, a question was routed, a request the supervisor passed to the
+        // person) moves in place, with the words its new audience reads.
+        for (id, spec) in desired {
+            if let current = open[id], current != spec.audience {
+                try db.run("UPDATE decisions SET audience = ?, kind = ?, title = ?, question = ?, label = ?, payload = ? WHERE id = ?",
+                           [.text(spec.audience), .text(spec.kind), .text(spec.title), .text(spec.question), .text(spec.label), .text((try? BuddyOperationsDB.encode(spec.payload)) ?? "{}"), .text(id)])
+            }
+        }
         // A step's words follow what it says now (one saved before steps named their page says its site once Buddy finds the page).
         for (id, spec) in desired where open[id] != nil && spec.kind == "step" {
             try db.run("UPDATE decisions SET title = ?, question = ? WHERE id = ? AND (title != ? OR question != ?)", [.text(spec.title), .text(spec.question), .text(id), .text(spec.title), .text(spec.question)])
@@ -1103,6 +1342,19 @@ struct BuddyAttempt {
         }
     }
     /// Brings every live task's blockers up to date: once at start (tasks that were already waiting get their entry) and after any change.
+    /// Clears what no longer needs the person: a notice (information only) after three days, and a question or notice about a task that has
+    /// ended, once it is a day old. A question about the work itself (a change to an agent's instructions, say) stays until it is answered.
+    /// Needs held items from four days before, about work long finished (25 Oct).
+    func tidyDecisions(now: Date = Date()) throws {
+        let day = Self.stamp(now.addingTimeInterval(-86400)), threeDays = Self.stamp(now.addingTimeInterval(-3 * 86400))
+        try db.run("UPDATE decisions SET status = 'resolved', resolution = 'expired', resolved_at = ? WHERE status = 'open' AND kind = 'notice' AND created_at < ?", [.text(Self.stamp(now)), .text(threeDays)])
+        for row in try db.rows("SELECT id, payload FROM decisions WHERE status = 'open' AND kind IN ('escalation', 'notice') AND created_at < ?", [.text(day)]) {
+            let payload = (try? BuddyOperationsDB.decode(row[1].string ?? "{}")) ?? [:]
+            guard let task = payload["taskId"] as? String, !task.isEmpty, let job = jobs.first(where: { $0["id"] as? String == task }),
+                  Self.terminal.contains(job["status"] as? String ?? "") || job["status"] as? String == "failed" else { continue }
+            try db.run("UPDATE decisions SET status = 'resolved', resolution = 'task_ended', resolved_at = ? WHERE id = ? AND status = 'open'", [.text(Self.stamp(now)), .text(row[0].string ?? "")])
+        }
+    }
     private func reconcileDecisions() throws {
         try db.transaction { for job in jobs { try Self.syncDecisions(job, in: db) } }
     }
@@ -1115,6 +1367,8 @@ struct BuddyAttempt {
             item["title"] = row[4].string ?? ""; item["question"] = row[5].string ?? ""; item["actionLabel"] = row[6].string ?? ""
             item["payload"] = (try? BuddyOperationsDB.decode(row[7].string ?? "{}")) ?? [String: Any]()
             item["createdAt"] = row[8].string ?? ""; item["audience"] = row[9].string ?? "user"
+            // Whose lane a supervisor's item waits for (a project's own Chief, or the team's supervisor), so the page can tell whether it runs.
+            if item["audience"] as? String == "supervisor", let task = row[2].string, let lead = jobs.first(where: { $0["id"] as? String == task })?["supervisorId"] as? String { item["supervisorId"] = lead }
             out.append(item)
         }
         return out
@@ -1642,7 +1896,7 @@ enum BuddyAgentChanges {
     static let appFields: Set<String> = ["role", "instructions"]
     static func adopter(scope: String, field: String) -> String { scope == "agent" ? (pageFields.contains(field) ? "page" : appFields.contains(field) ? "app" : "") : "" }
     /// Must match BuddyAvatar (tests that compile both check it); repeated here so the worker core stands alone.
-    static let avatarShapes = ["diamond", "sphere", "hex", "pill"]
+    static let avatarShapes = ["square", "sphere", "hex", "pill", "capsule", "arch", "diamond"]
     static let avatarColors = ["lilac", "blue", "peach", "mint", "red", "gold", "cobalt"]
     static let legacyShapes = ["star": "diamond", "pebble": "sphere", "cube": "hex", "clover": "pill"]
     static func shape(_ value: String) -> String? { let id = legacyShapes[value] ?? value; return avatarShapes.contains(id) ? id : nil }
@@ -1983,7 +2237,7 @@ enum BuddyRulesReader {
 
     private func fail(_ message: String) -> BuddyWorkerFailure { BuddyWorkerFailure(message: message) }
     static let labels: [String: String] = ["name": "name", "role": "role", "instructions": "instructions", "avatarShape": "figure", "avatarColor": "colour", "hidden": "visibility", "model": "model", "dailyLimitUSD": "daily spending limit",
-        "proactive": "proactive updates", "tools.web": "web access (also needed for website tasks)", "tools.projectFiles": "file access", "tools.desktop": "Mac app access (also needed for website tasks)", "teamCheckInsEnabled": "team check-ins", "teamCheckInIntervalMinutes": "team check-in interval",
+        "proactive": "proactive updates", "tools.web": "web access (also Buddy’s Chrome for website tasks)", "tools.projectFiles": "file access", "tools.desktop": "Mac app access", "teamCheckInsEnabled": "team check-ins", "teamCheckInIntervalMinutes": "team check-in interval",
         "teamCheckInModel": "team check-in model", "teamDailyLimitUSD": "team check-in limit", "teamSupervisor": "team supervisor"]
     private func name(of agent: String) -> String { ((try? agents())?.first { $0["id"] as? String == agent }?["name"] as? String) ?? "this agent" }
     func describe(_ field: String, _ value: Any?) -> String {

@@ -11,7 +11,7 @@ import AppKit
         func wait(_ id:String,_ status:String) async throws->[String:Any]{for _ in 0..<120{let t=try await call(["operation":"detail","taskId":id])["task"] as! [String:Any];if t["status"] as? String==status{return t};if t["status"] as? String=="failed"{throw BuddyFailure(message:"Sign-in fixture failed: \(t["progress"] ?? "unknown")")};try await Task.sleep(nanoseconds:100_000_000)};throw BuddyFailure(message:"Sign-in fixture timed out waiting for \(status)")}
         func create(_ request:String,for owner:String?=nil) async throws->String{let value=try await call(["operation":"create","agentId":owner ?? agent,"requestId":request,"title":"Inert account","goal":"Exercise a private sign-in checkpoint only","kind":"general","provider":"chatgpt","budgetUSD":0]);return (value["task"] as! [String:Any])["id"] as! String}
         let declined=try await create("decline"),first=try await wait(declined,"waiting_review"),review=(first["reviews"] as! [[String:Any]])[0]
-        require(review["kind"] as? String=="authentication" && review["mode"] as? String=="signup","new accounts always have a native approval before private Chrome opens")
+        require(review["kind"] as? String=="authentication" && review["mode"] as? String=="signin","a sign-in always has a native choice before private Chrome opens (new accounts ask with their own card: tests/WebsiteAccounts.swift)")
         _ = try await call(["operation":"review","taskId":declined,"id":review["id"]!,"accept":false]);_ = try await wait(declined,"completed")
         require(!FileManager.default.fileExists(atPath:root.appendingPathComponent("Worker/PrivateSignIn.json").path),"declining cannot open a private browser or grant a session")
         let id=try await create("approve"),pending=try await wait(id,"waiting_review"),r=(pending["reviews"] as! [[String:Any]])[0]
@@ -31,6 +31,18 @@ import AppKit
         require(finished,"human finish closes private handoff after the agent pauses")
         _ = try await wait(id,"completed")
         require(!FileManager.default.fileExists(atPath:root.appendingPathComponent("Worker/PrivateSignIn.json").path),"finish removes the private marker and resumes the saved task")
-        print("PASS: native signup approval/decline, the shared Chrome window handed to the person (the queue keeps running for others), protected desktop marker, Done in the chat and task resume without credentials")
+        print("PASS: native sign-in choice/decline, the shared Chrome window handed to the person (the queue keeps running for others), protected desktop marker, Done in the chat and task resume without credentials")
+        // Chief on RunPod, 23 Oct: a click on the deploy page's "CPU" tab waited for the user. A step the browser calls routine goes ahead by
+        // itself, recorded as Buddy's own decision; one it does not (Deploy) still waits for review.
+        func browserStep(_ marker:String) async throws->String{let value=try await call(["operation":"create","agentId":agent,"requestId":marker,"title":"Deploy page","goal":"\(marker) on the deploy page","kind":"general","provider":"chatgpt","budgetUSD":0]);return (value["task"] as! [String:Any])["id"] as! String}
+        let shown=try await wait(try await browserStep("ROUTINE-CLICK"),"completed")
+        let shownStep=(shown["reviews"] as? [[String:Any]] ?? []).first{$0["kind"] as? String=="browser"} ?? [:]
+        require(shownStep["status"] as? String=="completed" && shownStep["autoApproved"] as? Bool==true && shownStep["answeredBy"] as? String=="rule" && shownStep["answeredByName"] as? String=="Buddy"
+                && (shownStep["answerReason"] as? String ?? "").contains("only changes what the page shows"),"a routine browser step went ahead as Buddy's own decision: \(shownStep)")
+        let held=try await browserStep("REVIEWED-CLICK"),waiting=try await wait(held,"waiting_review")
+        let heldStep=(waiting["reviews"] as? [[String:Any]] ?? []).first{$0["kind"] as? String=="browser"} ?? [:]
+        require(heldStep["status"] as? String=="pending" && heldStep["autoApproved"]==nil,"a step the browser does not call routine waits for review: \(heldStep)")
+        _ = try await call(["operation":"review","taskId":held,"id":heldStep["id"]!,"accept":true]);_ = try await wait(held,"completed")
+        print("PASS: a browser step that only shows something goes ahead as Buddy's own decision; one that could change something waits for review")
     }
 }

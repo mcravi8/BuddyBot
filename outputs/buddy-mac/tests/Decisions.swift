@@ -1,5 +1,7 @@
 import Foundation
 
+@MainActor enum DecisionCheck { static func desired(_ job: [String: Any]) -> [String] { BuddyWorkerStore.desiredDecisions(job).map(\.kind) } }
+
 @main struct DecisionChecks {
     @MainActor static func require(_ value: Bool, _ message: String) { if !value { fputs("FAILED: \(message)\n", stderr); exit(1) } }
     static func run(_ path: String, _ environment: [String: String]) throws -> Int32 {
@@ -137,6 +139,13 @@ import Foundation
         require(kinds(now) == ["stopped", "unconfirmed"] && now.contains { ($0["title"] as? String) == "Check whether “Submit application” went through" }, "a restart opens one blocker for the stopped task and one for the action that may have been sent: \(kinds(now))")
         try after.resolveAction(task: crashed, review: "sent", confirmed: true)
         require(kinds(try open(after, w)) == ["stopped"], "checking the action off ends only its blocker")
+        // 25 Oct: an approved project command (a Word export script) whose session ended before its result came back asked the user to check
+        // it. A command working inside the project is the team's to check: no question for the person, and the task goes on by itself.
+        let local = DecisionCheck.desired(["id": "t", "status": "completed", "supervisorId": "chief", "reviews": [["id": "r", "kind": "coding", "status": "uncertain", "tool": ["name": "Run command outside the sandbox"], "assessment": ["kind": "script"]]]])
+        let upload = DecisionCheck.desired(["id": "t", "status": "completed", "reviews": [["id": "u", "kind": "coding", "status": "uncertain", "tool": ["name": "Upload the results"], "assessment": ["kind": "sensitive"]]]])
+        require(!local.contains("unconfirmed") && upload.contains("unconfirmed"), "a project command is checked by the team; one that could send data out stays the user's: \(local) \(upload)")
+        require(BuddyWorkerStore.checkedByTeam(["kind": "coding", "assessment": ["kind": "unclear"]]) && !BuddyWorkerStore.checkedByTeam(["kind": "service", "assessment": ["kind": "routine"]]) && !BuddyWorkerStore.checkedByTeam(["kind": "coding"]),
+                "only coding commands Buddy read count")
         let reopened = try BuddyWorkerStore(directory: crashDirectory)
         require(kinds(try open(reopened, w)) == ["stopped"], "starting again changes nothing")
 
@@ -208,6 +217,22 @@ import Foundation
                 require(found == expected, "after being ended \(phase) commit \(commit) the blockers are exactly as \(phase == "before" ? "before" : "after") that step\n found: \(found)\n wanted: \(expected)")
             }
         }
+        // 25 Oct: Needs still held a RunPod sign-in from a task finished days before, an old notice and a question about ended work. A request on a
+        // task that has ended asks nothing; notices clear after three days, and questions or notices about ended tasks after a day. A question
+        // about the work itself stays until it is answered.
+        require(!DecisionCheck.desired(["id": "t", "status": "completed", "reviews": [["id": "s", "kind": "authentication", "status": "pending", "tool": ["name": "Sign in"], "mode": "signin", "origin": "https://console.runpod.io"]]]).contains("signin"),
+                "a sign-in left waiting on a finished task asks nothing")
+        let tidyStore = try BuddyWorkerStore(directory: root.appendingPathComponent("tidy/Worker"))
+        let ended = try start(tidyStore, w, a, request: "ended"); try tidyStore.update(ended, ["status": "running", "attempt": 1, "executionRunID": UUID().uuidString]); try tidyStore.update(ended, ["status": "completed", "result": "Done."])
+        try tidyStore.openDecision(workspace: w, id: "notice:old", agent: a, kind: "notice", title: "Runs paused", question: "I paused the runs.", label: "OK", payload: [:])
+        try tidyStore.openDecision(workspace: w, id: "escalation:ended", agent: a, kind: "escalation", title: "Chief needs your decision", question: "Restore mailbox access?", label: "Answer", payload: ["taskId": ended])
+        try tidyStore.openDecision(workspace: w, id: "change:open", agent: a, kind: "confirm", title: "Update Chief's instructions?", question: "Replace three lines?", label: "Allow", payload: ["changeId": "c"])
+        try tidyStore.tidyDecisions(now: Date().addingTimeInterval(2 * 86400))
+        let afterTwoDays = try open(tidyStore, w).compactMap { $0["id"] as? String }
+        require(afterTwoDays.contains("notice:old") && !afterTwoDays.contains("escalation:ended") && afterTwoDays.contains("change:open"), "after a day the question about the ended task clears: \(afterTwoDays)")
+        try tidyStore.tidyDecisions(now: Date().addingTimeInterval(4 * 86400))
+        let afterFour = try open(tidyStore, w).compactMap { $0["id"] as? String }
+        require(!afterFour.contains("notice:old") && afterFour.contains("change:open"), "after three days the notice clears, and the question about the work stays: \(afterFour)")
         print("PASS: one blocker per cause with a stable identity, each kind (sign-in, operation, waiting, stopped, allowance, unconfirmed action, limit), no duplicates, events for opening and ending, read and dismissed kept natively and separate, blockers found at start, and the process ended at all \(steps * 2) commit boundaries")
 
         // 9. Every stop is seen by someone, and each entry says who it is for: the person, or the supervisor when the task names one.

@@ -56,6 +56,16 @@ import AppKit
             fixtureLog(id).compactMap { $0["kind"] as? String == "request" ? $0["value"] as? [String: Any] : nil }.filter { $0["method"] as? String == method }.compactMap { $0["params"] as? [String: Any] }
         }
         func logged(_ id: String, _ kind: String) -> [Any] { fixtureLog(id).filter { $0["kind"] as? String == kind }.compactMap { $0["value"] } }
+        /// Whether the stand-in holds the task's thread as archived (codex-archive.json), waiting a few seconds: the attempt's connection archives it as it closes.
+        func archived(_ id: String, _ thread: String, seconds: Double = 12) async -> Bool {
+            let url = support.appendingPathComponent("Worker/Tasks/\(id)/Conversation/Conversations/codex-archive.json"), deadline = Date().addingTimeInterval(seconds)
+            while Date() < deadline {
+                if let data = try? Data(contentsOf: url), let shelf = try? JSONSerialization.jsonObject(with: data) as? [String: Bool], shelf[thread] == true { return true }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            return false
+        }
+        func order(_ id: String) -> [String] { fixtureLog(id).compactMap { $0["kind"] as? String == "request" ? ($0["value"] as? [String: Any])?["method"] as? String : nil } }
         func review(_ job: [String: Any]) -> [String: Any] { (job["reviews"] as? [[String: Any]] ?? []).last ?? [:] }
         func answer(_ task: String, _ job: [String: Any], accept: Bool) async throws { _ = try await worker(["operation": "review", "taskId": task, "id": review(job)["id"] ?? "", "accept": accept]) }
         func text(_ value: Any?) -> String { value as? String ?? "" }
@@ -74,15 +84,22 @@ import AppKit
             try require(thread["sandbox"] as? String == "workspace-write" && thread["approvalPolicy"] as? String == "on-request" && thread["approvalsReviewer"] as? String == "user", "workspace-write, approvals asked of Buddy: \(thread["sandbox"] ?? "-") \(thread["approvalPolicy"] ?? "-")")
             try require(config["sandbox_workspace_write.network_access"] as? Bool == false && config["sandbox_workspace_write.exclude_slash_tmp"] as? Bool == true && config["sandbox_workspace_write.exclude_tmpdir_env_var"] as? Bool == true, "network off and writes only in the project: \(config)")
             try require(config["features.apps"] as? Bool == false && thread["model"] as? String == "gpt-fixture-coder", "no connectors, the agent's model: \(config["features.apps"] ?? "-") \(thread["model"] ?? "-")")
+            try require(thread["threadSource"] as? String == "chatgpt_hidden", "labelled so the ChatGPT app keeps it off its sidebar while it works: \(thread["threadSource"] ?? "-")")
             let tools = Set((thread["dynamicTools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
-            let claudeCoding = Set(BuddyProjectFiles.tools.compactMap { $0["name"] as? String }).union(["buddy_copy_into_project", "buddy_copy_out_of_project", "buddy_checkpoint", "buddy_request_decision", "buddy_request_signin", "buddy_coding_command"])
+            let claudeCoding = Set(BuddyProjectFiles.tools.compactMap { $0["name"] as? String }).union(["buddy_copy_into_project", "buddy_copy_out_of_project", "buddy_checkpoint", "buddy_request_decision", "buddy_request_signin", "buddy_coding_command", "buddy_browser_fetch", "buddy_service_api", "buddy_remote_machine"])
             // Buddy's command tool is there only for a command that signs in (credential is required); Codex runs every other command in its own shell.
             let command = (thread["dynamicTools"] as? [[String: Any]] ?? []).first { $0["name"] as? String == "buddy_coding_command" }?["inputSchema"] as? [String: Any] ?? [:]
-            try require(tools == claudeCoding && (command["required"] as? [String] ?? []).contains("credential"), "the same Buddy file, copy, save, decision and sign-in tools as a Claude coding session, with Buddy's command tool only for signed-in commands: \(tools.sorted())")
+            try require(tools == claudeCoding && (command["required"] as? [String] ?? []).contains("credential"), "the same Buddy file, copy, save, fetch, decision and sign-in tools as a Claude coding session, with Buddy's command tool only for signed-in commands: \(tools.sorted())")
             let brief = thread["developerInstructions"] as? String ?? ""
             try require(brief.contains("Decisions: decide by default.") && brief.contains("Use buddy_checkpoint only when the user must act in person") && brief.contains("No supervisor is set for this team") && brief.contains("Time: the user is in the")
                         && brief.contains(project(buildID).path) && brief.contains("You are Codey") && !brief.contains("Claude"), "Buddy's coding brief with the decision policy, supervision line and clock, adapted for Codex: \(brief.prefix(300))")
+            try require(brief.contains("~/Library/Containers/<its bundle id>/Data/Documents/") && brief.contains("never active document"), "it says how to use a sandboxed Mac app such as Word without a prompt nobody answers, and never on the user's own document")
+            // 24 Oct: Forge asked to install LibreOffice for a .doc Word saves itself, then said ten times it lacked the "native command review"
+            // Chief told it to use. It is told the user's list is a last resort, and that the review is its own escalated command.
+            try require(brief.contains(BuddyWebStep.lastResort) && brief.contains("sandbox_permissions set to require_escalated") && brief.contains("there is no separate review tool")
+                        && brief.contains("when a note says why or gives another way to the result, follow that"), "it finds another way before asking, and knows how a command comes to review")
             let turn = requests(buildID, "turn/start").first ?? [:], policy = turn["sandboxPolicy"] as? [String: Any] ?? [:]
+            try require(brief.contains("End with your result. " + BuddyVoice.plain + " " + BuddyVoice.result), "the coding brief ends with a plain message to the person, then the details for the team")
             try require(policy["type"] as? String == "workspaceWrite" && policy["networkAccess"] as? Bool == false && turn["cwd"] as? String == project(buildID).path && turn["model"] as? String == "gpt-fixture-coder" && turn["effort"] as? String == "high",
                         "the turn keeps the sandbox, cwd, model and its effort: \(turn.filter { $0.key != "input" })")
             try require(((turn["input"] as? [[String: Any]])?.first?["text"] as? String ?? "").hasPrefix("CODEX_BUILD"), "the brief is the turn's input")
@@ -94,6 +111,24 @@ import AppKit
             try require(result.hasPrefix("Built the fixture: node --check passed") && result.contains("Command receipts: 2 finished, 1 exited successfully") && !result.contains("Checking the build."), "the last answer is the result, with the receipts line: \(result)")
             try require((try? String(contentsOf: project(buildID).appendingPathComponent("index.js"), encoding: .utf8)) == "console.log(\"codex fixture\");\n", "Codex's edit is in the project copy")
             try require(UUID(uuidString: text(done["codingSessionID"])) != nil, "the Codex thread is saved for continuing: \(done["codingSessionID"] ?? "-")")
+            try require(text(done["codingSessionTools"]) == BuddyCodexCoding.toolsFingerprint, "with the tools it was started with: \(done["codingSessionTools"] ?? "-")")
+            // Codex lists every saved thread in the person's own ChatGPT/Codex apps; Buddy's tasks must not pile up there.
+            try require(await archived(buildID, text(done["codingSessionID"])), "the thread is archived out of the person's ChatGPT/Codex list once the attempt ends: \(order(buildID))")
+        }
+
+        // A resumed Codex thread keeps the tools it was started with. Chief's S01 thread started before buddy_checkpoint gained need file; on
+        // resume Buddy told it to use need file, its own tool refused it, and it asked its supervisor (itself) to route the download instead.
+        await section("a Codex thread started with other tools isn't resumed: the task starts a new thread with today's tools") {
+            let saved: [String: Any] = ["codingSessionID": "01a15d8a-de36-7db1-b82e-ce2dcccc3cb5", "codingSessionTools": BuddyCodexCoding.toolsFingerprint]
+            try require(BuddyCodexCoding.resumable(saved) == "01a15d8a-de36-7db1-b82e-ce2dcccc3cb5", "a thread with today's tools is resumed")
+            try require(BuddyCodexCoding.resumable(saved.merging(["codingSessionTools": "older-tools"]) { $1 }) == nil, "a thread started with other tools is not")
+            try require(BuddyCodexCoding.resumable(["codingSessionID": "01a15d8a-de36-7db1-b82e-ce2dcccc3cb5"]) == nil, "nor one saved before Buddy recorded its tools")
+            try require(BuddyCodexCoding.resumable(["codingSessionTools": BuddyCodexCoding.toolsFingerprint]) == nil, "and a task with no thread starts one")
+            let checkpoint = BuddyCodexCoding.tools.first { $0["name"] as? String == "buddy_checkpoint" }
+            let needs = ((checkpoint?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])?["need"] as? [String: Any]
+            try require((needs?["enum"] as? [String])?.contains("file") == true, "today's tools let a coding session ask for a file")
+            var changed = BuddyCodexCoding.tools; changed[0]["description"] = "changed"
+            try require(BuddyCodexCoding.fingerprint(changed) != BuddyCodexCoding.toolsFingerprint && BuddyCodexCoding.fingerprint(BuddyCodexCoding.tools) == BuddyCodexCoding.toolsFingerprint, "any change to a tool's description or schema counts, and the same tools always read the same")
         }
 
         // 2. Continue works as on Claude: the same task, the same thread, a second attempt.
@@ -103,6 +138,11 @@ import AppKit
             let again = try await poll(buildID, "the continued task finishes") { $0["attempt"] as? Int == 2 && settled($0) }
             try require(again["status"] as? String == "completed" && text(again["result"]).hasPrefix("Continued on the same thread"), "the follow-up finished: \(again["status"] ?? "") \(again["result"] ?? "")")
             try require(requests(buildID, "thread/resume").last?["threadId"] as? String == text(before["codingSessionID"]) && !text(before["codingSessionID"]).isEmpty, "it resumed the saved thread")
+            try require(requests(buildID, "thread/start").count == 1, "and started no new one, since its tools are today's")
+            let methods = order(buildID), resumed = methods.lastIndex(of: "thread/resume") ?? 0
+            try require(methods[..<resumed].last { $0.hasPrefix("thread/") } == "thread/unarchive" && requests(buildID, "thread/unarchive").last?["threadId"] as? String == text(before["codingSessionID"]), "it unarchived the thread first, since Codex resumes only an unarchived thread: \(methods)")
+            try require(await archived(buildID, text(before["codingSessionID"])), "and archived it again once this attempt ended")
+            try require(requests(buildID, "thread/resume").allSatisfy { $0["threadSource"] == nil }, "thread/resume is sent no label: the thread keeps the one it was started with")
             try require((again["commands"] as? [[String: Any]])?.count == 3, "the earlier receipts stay and the new one is added")
         }
 

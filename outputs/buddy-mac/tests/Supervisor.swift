@@ -37,6 +37,8 @@ import Foundation
         var key: String? = "fixture-key"
         /// The command reviews the lane answered through the worker's hook: (task, review, approved, supervisor, name, reason).
         var answered: [(String, String, Bool, String, String, String)] = []
+        /// The notes the lane gave a task's agent through the worker's hook: (task, note).
+        var told: [(String, String)] = []
         init(root: URL, store: BuddyWorkerStore, plans: BuddyPlanStore, lane: BuddySupervisorLane) { self.root = root; self.store = store; self.plans = plans; self.lane = lane }
         var worker: URL { root.appendingPathComponent("Worker") }
         var supervisorFolder: URL { worker.appendingPathComponent("Supervisor") }
@@ -53,7 +55,8 @@ import Foundation
         var holder: World?
         let hooks = BuddySupervisorLane.Hooks(stopTask: { id, cause in holder?.stopped.append((id, cause)); _ = try? holder?.store.update(id, ["status": "cancelled", "stopCause": cause]) },
                                               taskFiles: { id in ["/fixture/\(id)/baseline.csv"] },
-                                              answerReview: { task, review, accept, lead, name, reason in holder?.answered.append((task, review, accept, lead, name, reason)) })
+                                              answerReview: { task, review, accept, lead, name, reason in holder?.answered.append((task, review, accept, lead, name, reason)) },
+                                              tell: { task, note in holder?.told.append((task, note)) })
         let lane = BuddySupervisorLane(support: root, store: store, plans: plans,
                                        makeClaude: { BuddyWorkerProcess(resource: URL(fileURLWithPath: CommandLine.arguments[1]), runtime: URL(fileURLWithPath: CommandLine.arguments[2])) },
                                        makeGPT: { ConversationService(support: root, executable: URL(fileURLWithPath: CommandLine.arguments[3])) },
@@ -169,6 +172,22 @@ import Foundation
         let call = first[0]
         require(call["model"] as? String == "fixture-chief-model" && (call["tools"] as? [Any])?.isEmpty == true && call["budget"] is NSNull, "the run uses the supervisor's model, no tools and no budget: \(call)")
         require(call["policy"] as? Bool == true && call["supervises"] as? Bool == true && call["text"] as? Bool == true, "the instructions are the decision policy, the supervision line and the supervisor text")
+        // What the person reads of the supervisor's work is plain: its questions and stage reports, not the team's shorthand.
+        let speaking = BuddySupervisorLane.supervisorText(name: "Chief")
+        // 24 Oct: Chief declined Forge's Word export as "automates a Mac app despite desktop control being disabled" and asked the user to
+        // export by hand. It is told such a script needs no desktop control and is its to approve.
+        require(speaking.contains("needs no desktop control") && speaking.contains("that app's own folder counts as part of the project") && speaking.contains("never ask the user to open the app, turn on desktop control or export by hand"),
+                "the supervisor knows an Office export script is its to approve, and that the app's own folder is not outside the project for it")
+        // 24 Oct: Forge asked the user to install LibreOffice for a .doc Word saves itself, then Chief cancelled and restarted Forge ten times
+        // over a "missing review tool" Forge had all along. Chief looks for another way before anything reaches the user, decides how (not
+        // what) itself, and tells a coding task how a command comes to review instead of restarting it.
+        require(speaking.contains("A command review item with onUsersList is a request on the user's list") && speaking.contains("Only the user can approve it")
+                && speaking.contains("decline_command and say in reason exactly how") && speaking.contains("how is the team's") && speaking.contains("never forward it; objective is only for a change to what is delivered")
+                && speaking.contains("there is no separate review tool") && speaking.contains("never reassign or cancel it for that: rework it")
+                && speaking.contains("A stage with a request is one the user asked for in their own words: its tasks together cover every item of that request"),
+                "the supervisor screens the user's list, owns the how, and doesn't loop on a missing review tool")
+        require(speaking.hasSuffix(BuddySupervisorLane.speaking) && speaking.contains(BuddyVoice.plain) && speaking.contains("forward_to_user's text opens with what you ask of the user") && speaking.contains("a short report for the user (see below)")
+                && speaking.contains("Everything else you write (reasons, answers, rework instructions, briefs) is for the team") && !speaking.contains("the files, the decisions you made, open issues"), "the supervisor writes to the user plainly and keeps exact details for the team")
         require((call["you"] as? [String: Any])?["name"] as? String == "Chief" && (call["authorization"] as? [String: Any])?["quote"] as? String == "get stage 1 done" && call["notices"] as? Bool == false, "the briefing names the supervisor, carries the user's authorization and leaves out the notices: \(call)")
         require((call["results"] as? [String])?.first?.contains("R1: the baseline reproduces") == true && (call["files"] as? [String]) == ["/fixture/\(t1Job)/baseline.csv"], "the briefing carries the attempt's result and the task's files: \(call)")
         require((call["cwd"] as? String ?? "").hasPrefix(main.supervisorFolder.path + "/") && (call["outcomes"] as? Int ?? 0) >= 1, "the run works in its own folder under Worker/Supervisor and sees the record of what finished: \(call)")
@@ -189,6 +208,15 @@ import Foundation
                 "the answer is added for t2 and t2 is queued again: \(answered["updates"] ?? "") \(answered["status"] ?? "")")
         require(try rows(main, "SELECT resolved_by, status FROM decisions WHERE id = ?", [.text(waiting["id"] as? String ?? "")]).first.map { $0[0].string == "supervisor:\(chief)" && $0[1].string == "resolved" } == true, "the question is recorded as settled by the supervisor")
         require(try count(main, "SELECT COUNT(*) FROM plan_decisions WHERE kind = 'answer' AND decided_by = ?", [.text(chief)]) == 1, "the answer is a plan decision")
+        // Agent messages shows what Forge and Vera said to Chief about this work, both sides: the result Forge handed in and Chief's verdict,
+        // Vera's question and Chief's answer with its reason.
+        let talk = BuddyWorkerHost.planExchanges(try main.plans.conversations(workspace: w), attempts: { (try? main.store.attempts(of: $0)) ?? [] })
+        let handedIn = talk.first { $0["kind"] as? String == "result" }, asked = talk.first { $0["kind"] as? String == "question" }
+        require(handedIn?["fromAgentId"] as? String == forge && handedIn?["toAgentId"] as? String == chief && handedIn?["verdict"] as? String == "accepted" && handedIn?["title"] as? String == "Rerun the pipeline"
+                && (handedIn?["question"] as? String ?? "").hasPrefix("R1: the baseline reproduces") && !(handedIn?["body"] as? String ?? "").isEmpty, "Forge's result and Chief's acceptance, both sides: \(talk)")
+        require(asked?["fromAgentId"] as? String == vera && asked?["toAgentId"] as? String == chief && asked?["question"] as? String == "Which table should I check the rerun against?"
+                && asked?["body"] as? String == "Use Table 2 of the paper; it is the published baseline." && asked?["detail"] as? String == "The paper names Table 2 as the baseline.", "Vera's question and Chief's answer with its reason: \(talk)")
+        require(BuddyWorkerHost.message(of: "Saved it.\n\n---\nFiles: a.md\n\n---\nCommand receipts: 1 finished") == "Saved it.", "a handed-in result shows its message to the user, not the team's details")
         _ = try step(main)
         require(try planTask(main, "t2")["status"] as? String == "dispatched", "the answered task is working again")
         try finish(main.store, t2Job, result: "Signed off: Table 2 matches.")
@@ -332,7 +360,7 @@ import Foundation
         try hold.store.setPaused(false)
         try hold.store.setLimit(workspace: w, scope: "agent", id: chief, amount: 0.0, setBy: "user", quote: "no spending today")
         await tick(hold); await tick(hold)
-        let limitNotices = (try hold.store.openDecisions(workspace: w)).filter { $0["kind"] as? String == "notice" && ($0["question"] as? String ?? "") == "Chief's daily limit is used up; supervision continues tomorrow or when the limit is raised." }
+        let limitNotices = (try hold.store.openDecisions(workspace: w)).filter { $0["kind"] as? String == "notice" && ($0["question"] as? String ?? "") == "Chief's daily limit is used up; supervision continues tomorrow or when the limit is raised. Results, questions and approvals wait for Chief meanwhile." }
         require(calls(hold).isEmpty && limitNotices.count == 1 && limitNotices[0]["audience"] as? String == "user", "a used-up daily limit stops the lane with one notice for the user that day: \(limitNotices.count)")
         try hold.store.setLimit(workspace: w, scope: "agent", id: chief, amount: nil, setBy: "user")
         await tick(hold); await tick(hold)
@@ -340,7 +368,7 @@ import Foundation
         require(calls(hold).count == 2 && notYet.isEmpty, "two runs that only hold are not yet stuck")
         await tick(hold)
         let stuck = try notices(hold, "stuck")
-        require(calls(hold).count == 3 && stuck.count == 1 && stuck[0]["text"] as? String == "The team is stuck on Rerun the pipeline: Waiting to see more. Tell me how to proceed." && stuck[0]["chat"] as? Bool == true, "after three presentations with no effect, one stuck notice: \(stuck)")
+        require(calls(hold).count == 3 && stuck.count == 1 && stuck[0]["text"] as? String == "Chief is stuck on “Rerun the pipeline”. Say how to go on." && (stuck[0]["refs"] as? [String: Any])?["reason"] as? String == "Waiting to see more." && stuck[0]["chat"] as? Bool == true, "after three presentations with no effect, one stuck notice: \(stuck)")
         await tick(hold); await tick(hold)
         let still = try notices(hold, "stuck")
         require(calls(hold).count == 3 && still.count == 1, "a stuck item is not presented again and the notice is not repeated")
@@ -398,7 +426,7 @@ import Foundation
         try mode(thrice, "refuse")
         await tick(thrice); await tick(thrice); await tick(thrice)
         let refusedStuck = try notices(thrice, "stuck")
-        require(refusedStuck.count == 1 && refusedStuck.first?["text"] as? String == "The team is stuck on Rerun the pipeline: Buddy could not apply Chief's rework: Give the rework a precise instruction. Tell me how to proceed.", "a stuck notice after refusals says what was refused: \(refusedStuck)")
+        require(refusedStuck.count == 1 && refusedStuck.first?["text"] as? String == "Chief is stuck on “Rerun the pipeline”. Say how to go on." && (refusedStuck.first?["refs"] as? [String: Any])?["reason"] as? String == "Chief tried to send a result back, but Buddy refused: Give the rework a precise instruction.", "a stuck notice after refusals says what was refused: \(refusedStuck)")
         print("PASS: a refused action is recorded on its item with the reason, kept across a restart and shown in the next briefing until an action takes effect; a stuck notice after refusals names the refusal")
 
         // 8. A run that never starts (the user's 17:25 failure) is not a presentation: nothing goes stuck, the lane keeps retrying, and after 30 minutes of
@@ -418,8 +446,8 @@ import Foundation
         for _ in 0..<11 { await tick(offline) }
         let cant = try cantStart()
         require(calls(offline).count == 16 && cant.count == 1 && cant.first?["audience"] as? String == "user" && cant.first?["kind"] as? String == "notice"
-                && cant.first?["question"] as? String == "Chief can't supervise the team in the background: Subprocess initialization did not complete within 30000ms — check authentication and network connectivity. Buddy keeps trying every minute; results and questions wait for Chief meanwhile.",
-                "after 30 minutes of failures the user gets one plain notice with the reason: \(cant)")
+                && cant.first?["question"] as? String == "Chief can't supervise the team in the background: Subprocess initialization did not complete within 30000ms — check authentication and network connectivity. Buddy keeps trying every minute; results, questions and approvals wait for Chief meanwhile.",
+                "after failing a while the user gets one plain notice with the reason, saying approvals wait for Chief too: \(cant)")
         for _ in 0..<3 { await tick(offline) }
         require(try cantStart().count == 1 && (try notices(offline, "stuck")).isEmpty && (try itemState(offline, offlineKey)).state == "open", "the notice is not repeated and still nothing is stuck")
         try mode(offline, "auto")
@@ -531,6 +559,37 @@ import Foundation
         require(try calls(later).count == savesCalls && (try itemState(later, savedKey)).state == "stuck", "the repair runs once: a later stuck item stays stuck")
         print("PASS: once after Codex could save results, plan items stuck before it are reviewed again and their stuck notice closed; other stuck entries stay")
 
+        // 10c. Once after the update that lifted the limit of 12 tasks added to a stage (all counted, even finished ones): an item stuck on that
+        // refusal is reviewed again, the supervisor is told what changed, and its stuck notice is closed.
+        let limit = try world(base, "limit")
+        try propose(limit); _ = try step(limit)
+        try finish(limit.store, jobs(limit, "t1").first?["id"] as? String ?? "", result: "R1: two cleanups remain.")
+        _ = try step(limit)
+        let limitKey = "result:\(limit.keys["t1"] ?? ""):1", limitRun = "6F80FC78-0000-4000-8000-0000000000A1"
+        let limitDB = try BuddyOperationsDB(directory: limit.worker, existing: true)
+        await tick(limit, state: [:])
+        try limitDB.run("INSERT INTO supervisor_runs(id, workspace, plan_id, items, status, output, started_at, finished_at, effective) VALUES(?, ?, ?, ?, 'applied', '{\"actions\":[]}', '2026-10-24T04:39:30Z', '2026-10-24T04:39:35Z', 0)",
+                        [.text(limitRun), .text(w), .text(limit.planID), .text("[{\"key\":\"\(limitKey)\",\"kind\":\"result\"}]")])
+        try limitDB.run("INSERT OR REPLACE INTO supervisor_items(key, workspace, presented, state, last_run, updated_at, refusal) VALUES(?, ?, 3, 'stuck', ?, '2026-10-24T04:39:35Z', 'At most 12 tasks can be added to one stage; stage 1 has 12.')",
+                        [.text(limitKey), .text(w), .text(limitRun)])
+        _ = try limit.plans.addNotice(planId: limit.planID, kind: "stuck", text: "The team is stuck on Stage 1: Buddy could not apply Chief's add_tasks: At most 12 tasks can be added to one stage; stage 1 has 12. Tell me how to proceed.", chat: true, refs: ["itemKeys": [limitKey], "runId": limitRun])
+        try limitDB.run("DELETE FROM meta WHERE key = 'supervisor.reopened.stage-limit-v1'")
+        try limitDB.setMeta("supervisor.reopened.codex-saves-v2", "2026-10-20T00:00:00Z")   // that earlier one-time repair is tested above
+        try mode(limit, "hold")
+        let lifted = try world(base, "limit")
+        lifted.planID = limit.planID; lifted.keys = limit.keys
+        await tick(lifted)
+        require(try (calls(lifted).last?["items"] as? [String]) == [limitKey], "after the update the item stuck on the old limit is reviewed again: \(calls(lifted).last?["items"] ?? "")")
+        require(try ((calls(lifted).last?["notes"] as? [String])?.first ?? "").contains("at most 12 unfinished at a time"), "the supervisor is told what changed: \(calls(lifted).last?["notes"] ?? "")")
+        require(try notices(lifted, "stuck").map { $0["status"] as? String ?? "" } == ["closed"], "its stuck notice is closed")
+        let liftedCalls = try calls(lifted).count
+        try limitDB.run("UPDATE supervisor_items SET state = 'stuck', refusal = 'At most 12 tasks can be added to one stage; stage 1 has 12.' WHERE key = ?", [.text(limitKey)])
+        let afterLift = try world(base, "limit")
+        afterLift.planID = limit.planID; afterLift.keys = limit.keys
+        await tick(afterLift)
+        require(try calls(afterLift).count == liftedCalls && (try itemState(afterLift, limitKey)).state == "stuck", "the repair runs once")
+        print("PASS: once after the stage limit was lifted, an item stuck on the old limit is reviewed again with a note and its stuck notice closed")
+
         // 11. Supervision on ChatGPT. A supervisor whose selection is ChatGPT supervises over the ChatGPT subscription (the app-server), in a run with no
         // tool surface, with the lane's own output schema, instructions and briefing; its actions are applied exactly as on Claude, it records no
         // Claude spend, and a daily limit the person set for it (a limit on Claude spending) does not stop it.
@@ -624,13 +683,13 @@ import Foundation
         require(try calls(gptFail).count == 7 && gptFail.lane.status["lastError"] as? String == "The ChatGPT connection closed. Try again to reconnect." && gptFail.lane.status["online"] as? Bool == false && (try itemState(gptFail, failKey)).presented == 0,
                 "so is the app-server going away half way through the run: \(gptFail.lane.status)")
         func gptCantStart() throws -> [[String: Any]] { (try gptFail.store.openDecisions(workspace: w)).filter { $0["title"] as? String == "Background supervision can't start" } }
-        require(try gptCantStart().isEmpty, "fourteen minutes of failures do not bother the user yet")
+        require(try gptCantStart().count == 1, "after ten minutes of failures the user is told once, so reviews that wait for Chief are never a mystery")
         try mode(gptFail, "fail")
         for _ in 0..<9 { await tick(gptFail) }
         let gptCant = try gptCantStart()
         require(calls(gptFail).count == 16 && gptCant.count == 1 && gptCant.first?["audience"] as? String == "user"
-                && gptCant.first?["question"] as? String == "Chief can't supervise the team in the background: ChatGPT hit an error before answering. Buddy keeps trying every minute; results and questions wait for Chief meanwhile.",
-                "after 30 minutes of failures the user gets one plain notice with the reason: \(calls(gptFail).count) \(gptCant)")
+                && (gptCant.first?["question"] as? String ?? "").hasPrefix("Chief can't supervise the team in the background: ") && (gptCant.first?["question"] as? String ?? "").hasSuffix("Buddy keeps trying every minute; results, questions and approvals wait for Chief meanwhile."),
+                "the user still has exactly one plain notice with the reason: \(calls(gptFail).count) \(gptCant)")
         require(try notices(gptFail, "stuck").isEmpty && (try itemState(gptFail, failKey)).state == "open", "and still nothing is stuck")
         try mode(gptFail, "auto")
         await tick(gptFail)
@@ -722,18 +781,19 @@ import Foundation
         require((call15["kinds"] as? [String]) == ["question"] && (call15["taskKinds"] as? [String]) == ["general"] && (call15["expected"] as? [String]) == ["reassign with kind coding"] && call15["kindRule"] as? Bool == true,
                 "the lane is shown the question, the task's kind and what it needs, and told how kinds work: \(call15)")
         let retooled = try planTask(s01World, "s01")
-        require(retooled["kind"] as? String == "coding" && retooled["status"] as? String == "pending" && retooled["assignee"] as? String == chief, "the lane gives the task back to Chief as a coding task: \(retooled)")
+        require(retooled["kind"] as? String == "coding" && retooled["status"] as? String == "pending" && retooled["assignee"] as? String == forge, "the lane gives the task back as a coding task, and since Chief directs, to the engineer (Forge): \(retooled)")
         require(try s01World.store.job(generalID)["status"] as? String == "cancelled", "the general run is retired")
         require(try count(s01World, "SELECT COUNT(*) FROM plan_decisions WHERE kind = 'reassign' AND decided_by = ? AND task_id = ?", [.text(chief), .text(s01World.keys["s01"] ?? "")]) == 1, "the reassign is Chief's recorded decision")
         _ = try step(s01World)
         let codingRun = jobs(s01World, "s01").first { $0["requestId"] as? String == "plan:\(s01World.keys["s01"] ?? ""):2" } ?? [:]
-        require(codingRun["kind"] as? String == "coding" && codingRun["agentId"] as? String == chief && (codingRun["goal"] as? String ?? "").contains("\nGo-ahead: the user's request above is the trigger this task was waiting for. Wording in it such as “ONLY AFTER explicit user trigger”, “Do not execute now”, “On user Run S01 only”"),
+        require(codingRun["kind"] as? String == "coding" && codingRun["agentId"] as? String == forge && (codingRun["goal"] as? String ?? "").contains("\nGo-ahead: the user's request above is the trigger this task was waiting for. Wording in it such as “ONLY AFTER explicit user trigger”, “Do not execute now”, “On user Run S01 only”"),
                 "Buddy starts it again as a coding session, with the go-ahead: \(codingRun["kind"] ?? "not started") \(codingRun["goal"] ?? "")")
         let forUser15 = try s01World.store.openDecisions(workspace: w).filter { $0["audience"] as? String == "user" && $0["taskId"] as? String != signinID }, escalations15 = try notices(s01World, "escalation"), stuck15 = try notices(s01World, "stuck")
         require(forUser15.isEmpty && escalations15.isEmpty && stuck15.isEmpty, "nothing reached the user: \(forUser15) \(escalations15) \(stuck15)")
         let signin15 = try s01World.store.job(signinID), signinOpen = try s01World.store.openDecisions(workspace: w).filter { $0["taskId"] as? String == signinID }
         require((signin15["checkpoint"] as? [String: Any])?["routedTo"] as? String == "user" && signinOpen.count == 1 && signinOpen.first?["audience"] as? String == "user", "the sign-in stays with the user: \(signinOpen)")
-        print("PASS: the supervisor's own question about a missing tool on plan work goes to its background supervision, not the user (one already waiting is moved there when the lane starts; a sign-in stays the user's); an answer cannot add the tool and is refused; the lane reassigns the task with kind coding and Buddy starts it again as a coding session whose brief says the user's request is its go-ahead")
+        require((codingRun["goal"] as? String ?? "").contains("“Chief-owned” in it means Chief supervises and reviews this task; you do the work."), "and its brief reads “Chief-owned” as Chief supervising")
+        print("PASS: the supervisor's own question about a missing tool on plan work goes to its background supervision, not the user (one already waiting is moved there when the lane starts; a sign-in stays the user's); an answer cannot add the tool and is refused; the lane reassigns the task with kind coding, to the engineer since Chief directs, and Buddy starts it again as a coding session whose brief says the user's request is its go-ahead")
 
         // 16. The same loop through a rework (the user's next S01 run): Chief's general run finished PARTIAL, without spec_v1.sha256, and Chief sent
         // it back with "Continue only authorized S01 in the Chief-owned coding session. Generate and independently verify spec_v1.sha256. Do not
@@ -764,5 +824,298 @@ import Foundation
         let forUser16 = try reworked.store.openDecisions(workspace: w).filter { $0["audience"] as? String == "user" }, escalations16 = try notices(reworked, "escalation")
         require(forUser16.isEmpty && escalations16.isEmpty, "nothing reaches the user: \(forUser16) \(escalations16)")
         print("PASS: a rework whose instruction runs code makes the plan task a coding task for the same assignee, so Buddy restarts it as a coding session with the instruction, and nothing reaches the user")
+
+        // 17. The user presses Cancel task on a plan task's run. A cancelled run never resumes and opens no decision, so before this the plan read
+        // "waiting on the supervisor" while the supervisor had nothing, and the stage never finished. Now the lane is given the cancelled run, says
+        // who cancelled it, may not resume it, and starts the task again with its assignee: one new worker task for the next dispatch, and nothing
+        // reaches the user.
+        let cancelled = try world(base, "cancelled")
+        try mode(cancelled, "auto")
+        try propose(cancelled)
+        _ = try step(cancelled)
+        let cancelledRun = jobs(cancelled, "t1").first?["id"] as? String ?? ""
+        try cancelled.store.update(cancelledRun, ["status": "running", "attempt": 1, "executionRunID": UUID().uuidString])
+        try cancelled.store.update(cancelledRun, ["status": "cancelled", "stopCause": "user.cancel", "progress": "Cancelled. Check any interrupted external action before retrying."])
+        _ = try step(cancelled)
+        let waitingRun = (try cancelled.plans.summary(workspace: w, jobs: cancelled.store.jobs, names: names)).first?["run"] as? [String: Any] ?? [:]
+        require(try planTask(cancelled, "t1")["status"] as? String == "blocked" && waitingRun["state"] as? String == "waiting_on_supervisor", "the cancelled task waits on the supervisor: \(waitingRun)")
+        require(try cancelled.store.openDecisions(workspace: w).isEmpty, "a cancelled run opens no decision for anyone")
+        await tick(cancelled)
+        let call17 = calls(cancelled).last ?? [:], t1 = cancelled.keys["t1"] ?? ""
+        require((call17["items"] as? [String]) == ["cancelled:\(t1):1"] && (call17["kinds"] as? [String]) == ["cancelled"] && (call17["cancelled"] as? [String]) == ["The user cancelled this run (Cancel task)."]
+                && (call17["expected"] as? [String]) == ["reassign or waive"] && call17["cancelRule"] as? Bool == true, "the lane is given the cancelled run, who cancelled it and the two ways on: \(call17)")
+        let startedAgain = try planTask(cancelled, "t1")
+        require(try itemState(cancelled, "cancelled:\(t1):1").state == "handled" && startedAgain["status"] as? String == "pending" && startedAgain["assignee"] as? String == forge, "the lane starts it again with its assignee: \(startedAgain)")
+        require(try count(cancelled, "SELECT COUNT(*) FROM plan_decisions WHERE kind = 'reassign' AND decided_by = ? AND task_id = ?", [.text(chief), .text(t1)]) == 1, "the restart is Chief's recorded decision")
+        var restartedRuns: [String] = []
+        for _ in 0..<3 { restartedRuns += try step(cancelled) }
+        require(restartedRuns.count == 1 && jobs(cancelled, "t1").count == 2 && cancelled.store.jobs.first { $0["id"] as? String == restartedRuns.first }?["requestId"] as? String == "plan:\(t1):2",
+                "Buddy starts exactly one new run, for dispatch 2: \(jobs(cancelled, "t1").map { $0["requestId"] ?? "" })")
+        let workingAgain = (try cancelled.plans.summary(workspace: w, jobs: cancelled.store.jobs, names: names)).first?["run"] as? [String: Any] ?? [:]
+        require(try cancelled.store.job(cancelledRun)["status"] as? String == "cancelled" && workingAgain["state"] as? String == "working" && cancelled.stopped.isEmpty, "the team works again and the cancelled run is left as it was: \(workingAgain)")
+        let runsSoFar = calls(cancelled).count
+        await tick(cancelled)
+        require(calls(cancelled).count == runsSoFar, "nothing more waits for the supervisor")
+        // Resuming a cancelled run is refused: it never resumes; the item stays open with the reason.
+        try cancelled.store.update(restartedRuns.first ?? "", ["status": "running", "attempt": 1, "executionRunID": UUID().uuidString])
+        try cancelled.store.update(restartedRuns.first ?? "", ["status": "cancelled", "stopCause": "agent.cancel:\(vera)"])
+        _ = try step(cancelled)
+        try mode(cancelled, "resumeall")
+        await tick(cancelled)
+        let refused17 = try itemState(cancelled, "cancelled:\(t1):2")
+        require((calls(cancelled).last?["cancelled"] as? [String]) == ["Vera cancelled this run."] && refused17.state == "open" && refused17.refusal.contains("resume is only for work that stopped for a technical reason"),
+                "a resume of a cancelled run is refused, with the reason: \(refused17) \(calls(cancelled).last?["cancelled"] ?? "")")
+        // 24 Oct: Chief restarted Forge's Word export twenty times in twenty minutes, each ending the same way. With two restarts to the same
+        // teammate in the last hour, a third is refused, saying the how has to change.
+        let where17 = try rows(cancelled, "SELECT plan_id, stage_id FROM plan_decisions WHERE kind = 'reassign' AND task_id = ? LIMIT 1", [.text(t1)]).first
+        _ = try cancelled.plans.recordDecision(planId: where17?[0].string ?? "", kind: "reassign", by: chief, question: "", choice: forge, rationale: "Start it again.", stageId: where17?[1].string ?? "", taskId: t1, workerTaskId: "")
+        try mode(cancelled, "auto")
+        await tick(cancelled)
+        let again17 = try itemState(cancelled, "cancelled:\(t1):2")
+        require(again17.state == "open" && again17.refusal.contains("restarting it again changes nothing") && jobs(cancelled, "t1").count == 2,
+                "a third restart to the same teammate within the hour is refused, and nothing new starts: \(again17) \(jobs(cancelled, "t1").count)")
+        // Once the user has decided something about the plan (here they approved another way to do it), the earlier attempts no longer count.
+        _ = try cancelled.plans.recordDecision(planId: where17?[0].string ?? "", kind: "user_answer", by: "user", question: "How should the export run?", choice: "Approved: use the other route.", rationale: "Approved.", stageId: where17?[1].string ?? "", taskId: t1, workerTaskId: "")
+        await tick(cancelled)
+        let after17 = try itemState(cancelled, "cancelled:\(t1):2"), status17 = try planTask(cancelled, "t1")["status"] as? String ?? "-"
+        require(after17.state == "handled" && status17 == "pending", "after the user's answer the restart goes through: \(after17) \(status17)")
+        let forUser17 = try cancelled.store.openDecisions(workspace: w).filter { $0["audience"] as? String == "user" }, escalations17 = try notices(cancelled, "escalation")
+        require(forUser17.isEmpty && escalations17.isEmpty, "nothing reaches the user: \(forUser17) \(escalations17)")
+        print("PASS: a plan task whose run the user (or a teammate) cancelled is a supervisor item that says who cancelled it; a cancelled run cannot be resumed, so the lane starts the task again with its assignee and Buddy makes exactly one new worker task for the next dispatch; nothing reaches the user")
+
+        // 18. The user's S01 after "Get stage 1 done": the task's brief carried "an eight-hour elapsed ceiling"; it ended PARTIAL "because the window
+        // expired", and Chief held it, then forwarded it, "until the user explicitly says “Resume S01”". An authorization lasts until the stage is done
+        // or the user stops it: the dispatched brief carries no time limit, and a hold or a forward that waits for a new trigger or a self-imposed
+        // window is refused with the reason Chief sees next time. A plain hold, and a forward for what only the user has, still work.
+        let lasting = try world(base, "lasting")
+        let ceilingBrief = "Verify Figure 1 against the published PDF. Enforce an eight-hour elapsed ceiling and record the start."
+        let lastingPlan = try lasting.plans.propose(workspace: w, groupId: group, supervisorId: chief, objective: "Freeze the S01 protocol, then extend", stages: [s01Stage, stages[1]],
+                                                    tasks: [["stage": 1, "key": "s01", "title": "S01 caption verification", "assignee": chief, "kind": "coding", "brief": ceilingBrief, "deliverable": "stages/S01_protocol/acceptance.md"]],
+                                                    members: [chief, forge, vera], by: chief)
+        lasting.planID = lastingPlan["id"] as? String ?? ""; lasting.keys = lastingPlan["keys"] as? [String: String] ?? [:]
+        _ = try lasting.plans.authorize(planId: lasting.planID, through: 1, quote: "Get stage 1 done", messageId: "m-lasting", viaButton: false, now: Date())
+        _ = try step(lasting)
+        let firstRun = jobs(lasting, "s01").first ?? [:], firstGoal = firstRun["goal"] as? String ?? ""
+        require(firstGoal.contains("Your task (S01 caption verification): Verify Figure 1 against the published PDF.\n") && firstGoal.contains("\nNo time limit: ") && !firstGoal.contains("Verify Figure 1 against the published PDF. Enforce"),
+                "the dispatched brief no longer carries the eight-hour ceiling as an instruction, and says there is no time limit:\n\(firstGoal)")
+        try finish(lasting.store, firstRun["id"] as? String ?? "", result: "S01 PARTIAL: the eight-hour window expired before the published Figure 1 caption was verified.")
+        _ = try step(lasting)
+        let s01Key = "result:\(lasting.keys["s01"] ?? ""):1"
+        try mode(lasting, "holdresume")
+        await tick(lasting)
+        let held18 = try itemState(lasting, s01Key)
+        require(calls(lasting).last?["lasts"] as? Bool == true && (calls(lasting).last?["lastsData"] as? String ?? "").contains("until the stage is done or the user stops the plan"),
+                "the supervisor is told an authorization lasts and that it sets no time window of its own: \(calls(lasting).last ?? [:])")
+        require(held18.state == "open" && held18.refusal.contains("Resume S01") && held18.refusal.contains("lasts until the stage is done or the user stops it") && held18.refusal.contains("only daily spending limits"),
+                "a hold until the user says “Resume S01”, for an expired window, is refused with the reason: \(held18)")
+        try mode(lasting, "forwardresume")
+        await tick(lasting)
+        require((calls(lasting).last?["refused"] as? [String])?.first?.contains("Your last action on this item was refused") == true, "the next briefing says why: \(calls(lasting).last?["refused"] ?? "")")
+        let forwarded18 = try itemState(lasting, s01Key), escalations18 = try notices(lasting, "escalation"), open18 = try lasting.store.openDecisions(workspace: w)
+        require(forwarded18.state == "open" && forwarded18.refusal.contains("Resume S01") && escalations18.isEmpty && !open18.contains { $0["kind"] as? String == "escalation" },
+                "a forward that asks the user to say “Resume S01” is refused and reaches nobody: \(forwarded18)")
+        // A rework that sets a fresh ceiling is applied, and the restarted brief carries no limit.
+        try mode(lasting, "reworkwindow")
+        await tick(lasting)
+        require(try planTask(lasting, "s01")["status"] as? String == "pending", "the rework is applied")
+        _ = try step(lasting)
+        let reworkRun = jobs(lasting, "s01").first { $0["requestId"] as? String == "plan:\(lasting.keys["s01"] ?? ""):2" } ?? [:], reworkGoal = reworkRun["goal"] as? String ?? ""
+        require(reworkGoal.contains("Rework requested by Chief: Resume S01 from its saved checkpoint. Verify Figure 1 against the published PDF.") && !reworkGoal.contains("Rework requested by Chief: Resume S01 from its saved checkpoint. Enforce")
+                && reworkGoal.contains("\nNo time limit: "), "the restarted brief has the rework without its ceiling:\n\(reworkGoal)")
+        print("PASS: an authorized stage's task carries no self-imposed time limit; a supervisor hold or forward that waits for the user to say “Resume” or for an expired window is refused with the reason, and a rework's ceiling is taken out of the restarted brief")
+
+        // 19. A PARTIAL plan task that waits for a file only the user has (the published PDF) continues by itself once the file is where it was asked
+        // for: the supervisor forwards with the path, the user saves it there in Finder, and on its next pass the lane hands it over; nobody says “resume”.
+        let arrival = try world(base, "arrival")
+        let research = arrival.root.appendingPathComponent("Research", isDirectory: true), retry = research.appendingPathComponent("stages/S01_protocol/source_retry", isDirectory: true)
+        try FileManager.default.createDirectory(at: retry, withIntermediateDirectories: true)
+        try Data("%PDF-1.4 preprint".utf8).write(to: retry.appendingPathComponent("preprint.pdf"))
+        _ = try BuddyProjectFiles(support: arrival.root).addFolder(w, to: research)
+        try propose(arrival); _ = try step(arrival)
+        let arrivalRun = jobs(arrival, "t1").first?["id"] as? String ?? ""
+        try finish(arrival.store, arrivalRun, result: "S01 PARTIAL: the published PDF is behind the publisher's sign-in; Figure 1 is unverified.")
+        _ = try step(arrival)
+        try mode(arrival, "forwardfile")
+        await tick(arrival)
+        let fileNotice = try notices(arrival, "escalation")
+        require(calls(arrival).last?["pathField"] as? Bool == true && fileNotice.count == 1 && (fileNotice.first?["refs"] as? [String: Any])?["file"] as? String == "Research/stages/S01_protocol/source_retry/",
+                "the forward names where the file goes: \(fileNotice)")
+        try mode(arrival, "auto")
+        await tick(arrival); await tick(arrival)
+        require(try planTask(arrival, "t1")["status"] as? String == "review" && (try notices(arrival, "escalation")).first?["status"] as? String == "open", "the file that was already there is not the one asked for: the task waits")
+        try Data("%PDF-1.7 published J. Stat. Mech. 023403".utf8).write(to: retry.appendingPathComponent("Marcaccioli_2022_published.pdf"))
+        await tick(arrival)
+        require(try planTask(arrival, "t1")["status"] as? String == "pending", "the PARTIAL task is sent back to work with the file: \(try planTask(arrival, "t1"))")
+        let arrivedNotice = try notices(arrival, "escalation").first ?? [:]
+        require(arrivedNotice["status"] as? String == "answered" && ((arrivedNotice["refs"] as? [String: Any])?["answer"] as? String ?? "").contains("Research/stages/S01_protocol/source_retry/Marcaccioli_2022_published.pdf"),
+                "the question is answered with the file's place: \(arrivedNotice)")
+        _ = try step(arrival)
+        let arrivedRun = jobs(arrival, "t1").first { $0["requestId"] as? String == "plan:\(arrival.keys["t1"] ?? ""):2" } ?? [:]
+        require((arrivedRun["goal"] as? String ?? "").contains("Marcaccioli_2022_published.pdf"), "the task starts again, told where the file is: \(arrivedRun["goal"] ?? "not started")")
+        require(!(try arrival.store.openDecisions(workspace: w)).contains { $0["audience"] as? String == "user" }, "nothing waits for the user")
+        print("PASS: a PARTIAL plan task waiting for a file the user must get continues by itself once the file appears where the supervisor asked for it; a file that was already there does not count")
+
+        // 20. The user's S02a: Chief cancelled a run to give the task to Forge, and every start after that was refused, so each of Chief's reassigns
+        // took effect and nothing followed it. The lane asked Chief about that one task about 170 times in 90 minutes and used up the user's ChatGPT
+        // allowance. After three decisions in a row that nothing followed, the lane stops asking about that task and the user gets one notice; it
+        // asks again as soon as anything happens to the task's work, and after a restart.
+        let looping = try world(base, "looping")
+        try mode(looping, "reassignall")
+        try propose(looping)
+        _ = try step(looping)
+        let t1Loop = looping.keys["t1"] ?? "", firstLoopRun = jobs(looping, "t1").first?["id"] as? String ?? ""
+        try looping.store.update(firstLoopRun, ["status": "cancelled", "stopCause": "supervisor.cancel", "progress": "Cancelled by Chief: Forge is the engineer for this."])
+        _ = try step(looping)
+        // Every start is refused, as the start cap refused them on S02a.
+        func refusingStep(_ world: World) throws {
+            _ = try BuddyStageLoop.step(plans: world.plans, workspace: w, jobs: world.store.jobs, names: names) { _, _, _ in throw BuddyWorkerFailure(message: "Forge can't start this task right now.") }
+        }
+        for _ in 0..<6 { await tick(looping); try refusingStep(looping) }
+        require(calls(looping).count == 3, "Chief is asked three times, and not again once nothing follows its decisions: \(calls(looping).map { $0["items"] ?? "" })")
+        let stuck20 = try notices(looping, "stuck"), stuckText = ((stuck20.first?["refs"] as? [String: Any])?["reason"] as? String ?? "")
+        require(stuck20.count == 1 && (stuck20.first?["text"] as? String ?? "") == "Chief is stuck on “Rerun the pipeline”: its last 3 decisions didn't move the work. Say how to go on." && stuckText.contains("Chief decided on it 3 times") && stuckText.contains("Forge can't start this task right now") && stuck20.first?["chat"] as? Bool == true,
+                "the user gets one notice that says what kept happening: \(stuck20)")
+        require(try planTask(looping, "t1")["status"] as? String == "blocked" && looping.stopped.isEmpty && jobs(looping, "t1").count == 1, "the task itself is left as it was, waiting")
+        // Something happens to the task's work (here the user starts it again, and that run is cancelled too): Chief is asked again.
+        try looping.plans.reassign(taskId: t1Loop, assignee: forge, by: "user", members: members)
+        let userRun = try step(looping).first ?? ""
+        try looping.store.update(userRun, ["status": "cancelled", "stopCause": "user.cancel"])
+        _ = try step(looping)
+        try mode(looping, "hold")
+        await tick(looping)
+        require(calls(looping).count == 4 && (calls(looping).last?["kinds"] as? [String]) == ["cancelled"], "once the task's work changed, Chief is asked about it again: \(calls(looping).last ?? [:])")
+        // Stuck a second time, then Buddy restarts (a fix may have come with it): Chief is asked once more.
+        try mode(looping, "reassignall")
+        for _ in 0..<6 { await tick(looping); try refusingStep(looping) }
+        let stuckAgain = try notices(looping, "stuck")
+        require(calls(looping).count == 7 && stuckAgain.count == 2, "three more decisions that nothing followed, and one more notice: \(calls(looping).count) \(stuckAgain.count)")
+        let reopened = try world(base, "looping")
+        reopened.planID = looping.planID; reopened.keys = looping.keys
+        try mode(reopened, "hold")
+        await tick(reopened)
+        require(calls(reopened).count == 8, "after a restart the lane asks Chief about the task again: \(calls(reopened).count)")
+        print("PASS: a supervisor whose decisions on a task take effect but change nothing (every start refused) is asked about it three times, then not again, and the user gets one notice saying what kept happening; the task is left waiting, and the lane asks again once anything happens to its work or after a restart")
+
+        // 21. A project with its own Chief (24 Oct: the user asked whether each project can have its own Chief). Each Chief's lane takes only
+        // its own plan's work: the team's lane leaves Lyra's project to Lyra's lane, and Lyra's lane never sees Chief's.
+        let lyra = "66666666-6666-4666-8666-666666666666", group2 = "77777777-7777-4777-8777-777777777777"
+        var chiefsState = state
+        chiefsState["agents"] = (state["agents"] as? [[String: Any]] ?? []) + [["id": lyra, "name": "Lyra", "role": "Research lead"]]
+        chiefsState["groups"] = (state["groups"] as? [[String: Any]] ?? []) + [["id": group2, "name": "Lit review", "members": [lyra, forge], "chiefId": lyra]]
+        let chiefs = try world(base, "chiefs")
+        try mode(chiefs, "hold")
+        try BuddyAgentModels(support: chiefs.root).set(workspace: w, agent: lyra, selection: .init(provider: "claude", model: "fixture-lyra-model"))
+        try propose(chiefs)
+        _ = try step(chiefs)
+        try finish(chiefs.store, jobs(chiefs, "t1").first?["id"] as? String ?? "", result: "R1: the baseline reproduces.")
+        let litPlan = try chiefs.plans.propose(workspace: w, groupId: group2, supervisorId: lyra, objective: "Review the literature", stages: stages,
+                                               tasks: [["stage": 1, "key": "l1", "title": "Collect the papers", "assignee": forge, "kind": "research", "brief": "Collect the ten papers.", "deliverable": "papers.md"]], members: [lyra, forge], by: lyra)
+        let litID = litPlan["id"] as? String ?? "", l1 = (litPlan["keys"] as? [String: String])?["l1"] ?? ""
+        _ = try chiefs.plans.authorize(planId: litID, through: 1, quote: "get stage 1 done", messageId: "m-lit", viaButton: false, now: Date())
+        _ = try step(chiefs)
+        let litJob = chiefs.store.jobs.first { ($0["requestId"] as? String ?? "").hasPrefix("plan:\(l1):") }?["id"] as? String ?? ""
+        try chiefs.store.update(litJob, ["reportsTo": lyra, "supervisorId": lyra])
+        try finish(chiefs.store, litJob, result: "L1: the ten papers are collected.")
+        _ = try step(chiefs)
+        let lyraLane = BuddySupervisorLane(support: chiefs.root, store: chiefs.store, plans: chiefs.plans,
+                                           makeClaude: { BuddyWorkerProcess(resource: URL(fileURLWithPath: CommandLine.arguments[1]), runtime: URL(fileURLWithPath: CommandLine.arguments[2])) },
+                                           makeGPT: nil, keyReader: { _ in "fixture-key" }, hooks: .init(stopTask: { _, _ in }, taskFiles: { _ in [] }), fixed: lyra)
+        chiefs.lane.elsewhere = [lyra]
+        await tick(chiefs, state: chiefsState)
+        chiefs.now = chiefs.now.addingTimeInterval(120)
+        await lyraLane.tick(state: chiefsState, now: chiefs.now)
+        for _ in 0..<600 where lyraLane.status["busy"] as? Bool == true { try? await Task.sleep(nanoseconds: 20_000_000) }
+        let byModel = Dictionary(grouping: calls(chiefs), by: { $0["model"] as? String ?? "" }).mapValues { $0.flatMap { $0["items"] as? [String] ?? [] } }
+        let ownT1 = chiefs.keys["t1"] ?? ""
+        require((byModel["fixture-chief-model"] ?? []).contains { $0.contains(ownT1) } && !(byModel["fixture-chief-model"] ?? []).contains { $0.contains(l1) },
+                "the team's Chief gets its own project's result and not Lyra's: \(byModel["fixture-chief-model"] ?? [])")
+        require((byModel["fixture-lyra-model"] ?? []).contains { $0.contains(l1) } && !(byModel["fixture-lyra-model"] ?? []).contains { $0.contains(ownT1) },
+                "Lyra's lane gets her project's result and not Chief's: \(byModel["fixture-lyra-model"] ?? [])")
+        lyraLane.shutdown()
+        print("PASS: a project with its own Chief: each Chief's lane takes only its own plan's work, and the team's lane leaves that project to its Chief")
+
+        // 22. 25 Oct: the whole plan, eight stages and over a hundred tasks, was more than Chief could open, so it could not see that the stage
+        // it added was saved and asked the user to check. An agent gets finished stages as one line each, open stages in full, and always a reply
+        // it can open.
+        let longText = String(repeating: "Verified result with hashes, paths and a page-by-page audit. ", count: 40)
+        let bigStages: [[String: Any]] = (1...8).map { n in
+            ["id": "s\(n)", "n": n, "title": "Stage \(n)", "goal": "Goal \(n)", "acceptance": ["Done"], "status": n < 8 ? "done" : "working",
+             "request": n == 8 ? "Last cleanup on be8e8775, then stop. " + String(repeating: "Remove the word everywhere. ", count: 200) : "",
+             "tasks": (1...16).map { t in ["id": "t\(n)-\(t)", "title": "Task \(t)", "assignee": forge, "status": n < 8 ? "done" : "dispatched", "resultSummary": longText, "brief": longText] }]
+        }
+        let bigPlan: [String: Any] = ["id": "p", "status": "active", "supervisorId": chief, "stages": bigStages, "notices": (1...20).map { ["id": "n\($0)", "kind": "stage_report", "text": longText] }]
+        func bytes(_ v: [String: Any]) -> Int { (try? JSONSerialization.data(withJSONObject: v).count) ?? Int.max }
+        let forAgent = BuddyWorkerHost.fitForAgent(["plan": BuddyWorkerHost.agentPlan(bigPlan)]), shownStages = (forAgent["plan"] as? [String: Any])?["stages"] as? [[String: Any]] ?? []
+        require(bytes(["plan": bigPlan]) > BuddyTeamMonitor.toolResultLimit && bytes(forAgent) <= BuddyTeamMonitor.toolResultLimit, "the whole plan is over the limit and the agent's copy fits: \(bytes(["plan": bigPlan])) → \(bytes(forAgent))")
+        require(shownStages.count == 8 && shownStages.prefix(7).allSatisfy { $0["tasks"] as? Int == 16 && $0["goal"] == nil } && (shownStages.last?["tasks"] as? [[String: Any]])?.count == 16
+                && (shownStages.last?["tasks"] as? [[String: Any]] ?? []).allSatisfy { $0["brief"] == nil } && (shownStages.last?["request"] as? String ?? "").hasPrefix("Last cleanup on be8e8775"),
+                "finished stages are one line each, the open stage keeps its tasks (without briefs) and the start of the user's request")
+        print("PASS: an agent's copy of a big plan fits what it can open: finished stages in one line each, the open stage in full")
+
+        // 23. 25 Oct: the fixed restart guard would have let Chief restart the export, but the item it had refused stayed stuck and the user was
+        // still told the team was stuck. After Buddy is updatedX, an item stuck because Buddy refused the supervisor's action is looked at once
+        // more, and its stuck notice closes; the same build does it only once.
+        let updatedX = try world(base, "updatedX")
+        try propose(updatedX)
+        let raw23 = try BuddyOperationsDB(directory: updatedX.worker, existing: true), refused23 = "result:fixture-task:1", at23 = ISO8601DateFormatter().string(from: Date())
+        try raw23.run("INSERT INTO supervisor_items(key, workspace, presented, state, last_run, updated_at, refusal) VALUES(?, ?, 3, 'stuck', 'run-x', ?, 'you already gave this task to the same teammate 2 times in the last hour')", [.text(refused23), .text(w), .text(at23)])
+        try raw23.run("INSERT INTO supervisor_items(key, workspace, presented, state, last_run, updated_at, refusal) VALUES('result:judgedX:1', ?, 3, 'stuck', 'run-y', ?, '')", [.text(w), .text(at23)])
+        _ = try updatedX.plans.addNotice(planId: updatedX.planID, kind: "stuck", text: "The team is stuck on the export.", chat: true, refs: ["itemKeys": [refused23], "subject": "task:x"])
+        let chiefLeadX = BuddySupervisorLane.Supervisor(id: chief, name: "Chief")
+        updatedX.lane.reopenRefusedAfterUpdate(raw23, supervisor: chiefLeadX, build: "build-1")
+        let reopenedX = try itemState(updatedX, refused23), judgedX = try itemState(updatedX, "result:judgedX:1")
+        let note23 = try raw23.rows("SELECT note FROM supervisor_items WHERE key = ?", [.text(refused23)]).first?.first?.string ?? ""
+        require(reopenedX.state == "open" && reopenedX.presented == 0 && note23.contains("Buddy has been updated since") && note23.contains("2 times in the last hour") && judgedX.state == "stuck",
+                "after an update the refused item is looked at again, with what was refused; one stuck on the supervisor's own judgement is not: \(reopenedX) \(judgedX)")
+        require(try notices(updatedX, "stuck").allSatisfy { $0["status"] as? String == "closed" }, "the user's stuck notice about it closes")
+        try raw23.run("UPDATE supervisor_items SET state = 'stuck', refusal = 'refused again' WHERE key = ?", [.text(refused23)])
+        updatedX.lane.reopenRefusedAfterUpdate(raw23, supervisor: chiefLeadX, build: "build-1")
+        require(try itemState(updatedX, refused23).state == "stuck", "the same build reopens nothing a second time")
+        updatedX.lane.reopenRefusedAfterUpdate(raw23, supervisor: chiefLeadX, build: "build-2")
+        require(try itemState(updatedX, refused23).state == "open", "the next update does")
+        print("PASS: after Buddy is updated, an item stuck because Buddy refused the supervisor's action is looked at once more and its stuck notice closes")
+
+        // 24. 25 Oct: the user allowed a macOS prompt and told Chief, but the export stayed stuck until Buddy was next updated. The user writing in
+        // the plan's chat reopens what is stuck, with their words, closes the stuck notice, and counts as their latest decision.
+        let wrote = try world(base, "wrote")
+        try propose(wrote)
+        let raw24 = try BuddyOperationsDB(directory: wrote.worker, existing: true), at24 = ISO8601DateFormatter().string(from: Date())
+        let quietDecisions = try raw24.rows("SELECT COUNT(*) FROM plan_decisions WHERE kind = 'user_answer'").first?.first?.int ?? -1
+        wrote.lane.userWrote("thanks", workspace: w, planIds: [wrote.planID])
+        require(try raw24.rows("SELECT COUNT(*) FROM plan_decisions WHERE kind = 'user_answer'").first?.first?.int == quietDecisions, "with nothing stuck, a message changes nothing")
+        try raw24.run("INSERT INTO supervisor_items(key, workspace, presented, state, last_run, updated_at, refusal) VALUES('result:stuck-export:1', ?, 3, 'stuck', 'run-z', ?, 'refused')", [.text(w), .text(at24)])
+        _ = try wrote.plans.addNotice(planId: wrote.planID, kind: "stuck", text: "The team is stuck on the export.", chat: true, refs: ["itemKeys": ["result:stuck-export:1"]])
+        wrote.lane.userWrote("I allowed the macOS access prompt; have Forge rerun the export.", workspace: w, planIds: [wrote.planID])
+        let open24 = try itemState(wrote, "result:stuck-export:1"), note24 = try raw24.rows("SELECT note FROM supervisor_items WHERE key = 'result:stuck-export:1'").first?.first?.string ?? ""
+        let said24 = try raw24.rows("SELECT choice FROM plan_decisions WHERE kind = 'user_answer' AND decided_by = 'user' ORDER BY rowid DESC LIMIT 1").first?.first?.string ?? ""
+        let closed24 = try notices(wrote, "stuck").allSatisfy { $0["status"] as? String == "closed" }
+        require(open24.state == "open" && open24.presented == 0 && note24.contains("I allowed the macOS access prompt") && said24.contains("rerun the export") && closed24,
+                "the user's message reopens the stuck work with their words, closes the notice and is their latest decision: \(open24) \(said24)")
+        print("PASS: the user writing in a stuck plan's chat reopens the stuck work with their words, closes the stuck notice and counts as their latest decision")
+
+        // 25. 26 Oct: Inbox could not reach Chief (“I don't have permission to request a check-in from them”). Any agent may write to its Chief:
+        // the message is an item in that Chief's lane, the answer goes back to the task it was written from, and the group chat shows both.
+        let note = try world(base, "note")
+        try propose(note)
+        _ = try step(note)
+        let noteJob = jobs(note, "t1").first?["id"] as? String ?? "", ask25 = "The macOS prompt blocks the Word export; can I take the PDF route instead?"
+        let posted25 = try note.plans.postMessage(workspace: w, planId: note.planID, groupId: group, from: forge, to: chief, lead: chief, text: ask25, jobId: noteJob)
+        let again25 = try note.plans.postMessage(workspace: w, planId: note.planID, groupId: group, from: forge, to: chief, lead: chief, text: ask25, jobId: noteJob)
+        require(posted25.fresh && !again25.fresh && again25.id == posted25.id, "the same words still waiting are not posted twice")
+        await tick(note)
+        let seen25 = calls(note).last ?? [:]
+        require((seen25["kinds"] as? [String] ?? []).contains("message") && (seen25["messages"] as? [String] ?? []).contains(ask25) && seen25["messageRule"] as? Bool == true,
+                "Chief's lane gets the message as an item, with its words and how to handle it: \(seen25)")
+        require(note.told.contains { $0.0 == noteJob && $0.1.hasPrefix("[Answer from Chief, your supervisor] Yes, take the PDF route") }, "Chief's answer goes back to the task Forge wrote from: \(note.told)")
+        require(try note.plans.openMessages(workspace: w).isEmpty, "the answered message no longer waits")
+        let shown25 = try note.plans.messageExchanges(workspace: w), grouped25 = BuddyTeamMonitorStore.groupMessages(shown25)[group] ?? []
+        require(grouped25.count == 2 && grouped25[0]["fromAgentId"] as? String == forge && grouped25[0]["body"] as? String == ask25
+                && grouped25[1]["fromAgentId"] as? String == chief && (grouped25[1]["body"] as? String ?? "").hasPrefix("Yes, take the PDF route"),
+                "the group chat shows Forge's message, then Chief's answer: \(grouped25)")
+        for n in 0..<BuddyPlanStore.maxOpenMessages { _ = try note.plans.postMessage(workspace: w, planId: "", groupId: "", from: vera, to: chief, lead: chief, text: "Note \(n)", jobId: "") }
+        var capped25 = false
+        do { _ = try note.plans.postMessage(workspace: w, planId: "", groupId: "", from: vera, to: chief, lead: chief, text: "One more", jobId: "") } catch { capped25 = true }
+        require(capped25, "past five waiting messages a teammate waits for answers instead of writing more")
+        print("PASS: any agent can message its Chief: the message is an item in Chief's lane, the answer goes back to the agent's task, and the group chat shows both")
     }
 }

@@ -80,6 +80,8 @@ import Security
         }
         func reviews(_ job: [String: Any]) -> [[String: Any]] { job["reviews"] as? [[String: Any]] ?? [] }
         func pending(_ job: [String: Any]) -> [String: Any]? { reviews(job).last { $0["status"] as? String == "pending" } }
+        /// A review on the user's list once the supervisor has looked at it and passed it on (it is the supervisor's first while its lane runs).
+        func withUser(_ job: [String: Any]) -> Bool { pending(job).map { $0["route"] as? String == "user" } ?? false }
         func answer(_ id: String, _ review: [String: Any], accept: Bool) async throws {
             _ = try await worker(["operation": "review", "taskId": id, "id": review["id"] ?? "", "answers": ["command": [accept ? "Accept" : "Decline"]], "accept": accept])
         }
@@ -171,18 +173,20 @@ import Security
             try require(prompt.contains("Note from Buddy (not from the user):\n" + note), "Buddy's note is not presented as the user's words: \(prompt.suffix(500))")
         }
         await section("a credentialed command waits for the native review, which says in plain words that it signs in to WRDS; a declined review never reads the Keychain") {
-            let first = try await poll(signinID, "the credentialed command waits for review") { pending($0) != nil }
+            let first = try await poll(signinID, "the credentialed command waits for the user's review", withUser)
             let review = pending(first) ?? [:], tool = review["tool"] as? [String: Any] ?? [:], args = tool["arguments"] as? [String: Any] ?? [:]
             try require(review["kind"] as? String == "coding" && text(args["sign_in"]).hasPrefix("This command signs in to WRDS with your saved sign-in") && text(args["command"]) == envCommand,
                         "the review card: \(tool)")
-            try require(review["route"] as? String == "user", "a command with a sign-in is never the supervisor's: \(review["route"] ?? "-")")
+            try require(review["route"] as? String == "user" && review["screenedBy"] as? String == "Chief" && text(review["screenNote"]).contains("nothing on this Mac"),
+                        "a command with a sign-in is never the supervisor's to approve: Chief looked first and passed it on, with its note: \(review)")
             try require(saved.reads == 0 && !FileManager.default.fileExists(atPath: project(signinID).appendingPathComponent("never.txt").path), "nothing was read before the review: \(saved.reads)")
             try await answer(signinID, review, accept: false)
-            let second = try await poll(signinID, "the agent asks once more after the decline") { job in reviews(job).count == 2 && pending(job) != nil }
+            let second = try await poll(signinID, "the agent asks once more after the decline") { job in reviews(job).count == 2 && withUser(job) }
             try require(saved.reads == 0, "a declined review never reads the Keychain: \(saved.reads) reads")
             let declined = reviews(second).first ?? [:]
             try require(declined["status"] as? String == "cancelled" && declined["answeredBy"] as? String == "user" && !text(declined["answeredAt"]).isEmpty, "the declined review records who answered: \(declined)")
             try require(((second["commands"] as? [[String: Any]]) ?? []).isEmpty, "the declined command left no receipt: \(second["commands"] ?? [])")
+            try require(second["signInGrants"] == nil && pending(second)?["answeredBy"] == nil, "a declined request opens nothing: the next command asks again: \(second["signInGrants"] ?? "-")")
             try await answer(signinID, pending(second) ?? [:], accept: true)
         }
         await section("while the WRDS command runs the task says “Waiting for your Duo approval” and a Needs item asks to approve the push; both clear when it ends, with no stall stop") {
@@ -200,7 +204,7 @@ import Security
         }
         await section("after approval the sign-in reaches only that command's environment; its output is hidden in the receipt and in the tool result") {
             let job = try await detail(signinID), commands = job["commands"] as? [[String: Any]] ?? []
-            try require(saved.reads == 1, "the Keychain was read once, for the approved command: \(saved.reads)")
+            try require(saved.reads == 2, "the Keychain was read once for each approved command (two), and never for the declined one: \(saved.reads)")
             let signed = commands.first { $0["credential"] as? String == "wrds" } ?? [:], plain = commands.first { $0["credential"] == nil } ?? [:]
             try require(text(signed["output"]).contains("user=[hidden] pass=[hidden]") && text(signed["output"]).contains("digest=" + digest), "the exact sign-in reached the command and is hidden in its receipt: \(signed["output"] ?? "")")
             try require(text(signed["code"]) == envCommand && signed["network"] as? Bool == true && signed["exitCode"] as? Int == 0 && signed["timeoutSeconds"] as? Int == 300, "the receipt keeps the command, not the sign-in: \(signed.filter { $0.key != "output" })")
@@ -208,8 +212,23 @@ import Security
             let result = toolResult("cred2") ?? [:]
             try require(text(result["output"]).contains("user=[hidden] pass=[hidden]") && !json(result).contains(username) && !json(result).contains(password), "the model sees it hidden: \(result)")
             try require(text(job["result"]).hasPrefix("Ran the extract with the saved sign-in"), "the task's result: \(job["result"] ?? "")")
-            let approved = reviews(job).last ?? [:]
+            let approved = reviews(job).count > 1 ? reviews(job)[1] : [:]
             try require(approved["status"] as? String == "completed" && approved["answeredBy"] as? String == "user" && approved["answeredByName"] as? String == "you", "the approved review: \(approved)")
+        }
+        await section("approve once per task: a second WRDS command in the same task goes ahead on the user's earlier OK, says so on its record, and still asks for its own Duo push") {
+            let job = try await detail(signinID), all = reviews(job)
+            try require(all.count == 3, "three reviews: the declined one, the approved one, and the one that went ahead on that OK: \(all.map { "\($0["status"] ?? "")/\($0["answeredByName"] ?? "")" })")
+            let again = all.count == 3 ? all[2] : [:], args = (again["tool"] as? [String: Any])?["arguments"] as? [String: Any] ?? [:]
+            try require(again["status"] as? String == "completed" && again["answeredBy"] as? String == "user" && again["answeredByName"] as? String == "you (earlier in this task)"
+                        && again["credential"] as? String == "wrds" && !text(again["answerReason"]).isEmpty && text(args["command"]).contains("again user="), "the record says it went ahead on the user's earlier OK: \(again)")
+            let grant = (job["signInGrants"] as? [String: Any])?["wrds"] as? [String: Any] ?? [:]
+            try require(grant["reviewId"] as? String == all[1]["id"] as? String && !text(grant["at"]).isEmpty, "the task keeps which OK opened WRDS for it: \(job["signInGrants"] ?? "-")")
+            let every = try everyDecision(signinID)
+            try require(every.filter { $0.kind == "review" }.count == 2 && every.allSatisfy { $0.audience == "user" }, "the user was asked twice (declined, then approved), never a third time: \(every)")
+            try require(every.filter { $0.kind == "mfa" }.count == 2, "each WRDS sign-in still waited for its own Duo push: \(every)")
+            let ran = (job["commands"] as? [[String: Any]] ?? []).first { text($0["code"]).contains("again user=") } ?? [:]
+            try require(ran["credential"] as? String == "wrds" && text(ran["output"]) == "again user=[hidden] pass=[hidden]\n", "it ran with the sign-in, hidden in its receipt: \(ran)")
+            try require(text(toolResult("cred3")?["output"]) == "again user=[hidden] pass=[hidden]\n", "and the model saw it hidden: \(toolResult("cred3") ?? [:])")
         }
         await section("a background task asks with buddy_request_signin too, and waits for the user") {
             try await clearQueue()
@@ -226,7 +245,9 @@ import Security
         await section("a Codex coding thread gets buddy_coding_command with credential, runs the signed-in command through Buddy's shell after review, and keeps its own shell for the rest") {
             try await clearQueue()
             let id = try await start("CODEX_SIGNIN: run the WRDS extract.", as: forge, request: "codex-signin")
-            let waiting = try await poll(id, "the Codex credentialed command waits for review") { pending($0) != nil }
+            let waiting = try await poll(id, "the Codex credentialed command waits for the user's review", withUser)
+            try require(waiting["signInGrants"] == nil && reviews(waiting).count == 1 && pending(waiting)?["credential"] as? String == "wrds" && pending(waiting)?["route"] as? String == "user",
+                        "a new task asks again, once: the OK given in another task does not carry over: \(reviews(waiting))")
             let thread = codexLog(id).filter { $0["kind"] as? String == "request" }.compactMap { $0["value"] as? [String: Any] }.first { $0["method"] as? String == "thread/start" }?["params"] as? [String: Any] ?? [:]
             let tools = thread["dynamicTools"] as? [[String: Any]] ?? []
             let command = tools.first { $0["name"] as? String == "buddy_coding_command" } ?? [:], schema = command["inputSchema"] as? [String: Any] ?? [:]
@@ -246,6 +267,31 @@ import Security
             try require(result["success"] as? Bool == true && text((result["value"] as? [String: Any])?["output"]).contains("[hidden]") && !json(result).contains(username) && !json(result).contains(password), "the model sees it hidden: \(result)")
         }
 
+        await section("Settings → Saved sign-ins: the person replaces a wrong WRDS password or removes it through the page's sign-in bridge; no agent and no supervisor can, and no reply carries it") {
+            let wrongOne = "Fx!pw-WRONG-0001"
+            try saved.save(workspace: workspace, profile: "wrds", username: username, password: wrongOne)
+            let replaced = try await BuddySignInBox.handle(["action": "provide", "profile": "wrds", "username": username, "password": password], workspace: workspace, support: support, store: saved)
+            try require(replaced["saved"] as? Bool == true && replaced["resumed"] == nil && !json(replaced).contains(password) && !json(replaced).contains(username), "replaced from Settings, with no task to resume: \(json(replaced))")
+            try require(saved.items[workspace + ":wrds"]?.password == password, "the new password replaced the wrong one")
+            for actor in [clara, chief] {
+                for action in ["provide", "remove"] {
+                    var refused = false
+                    do { _ = try await worker(["operation": "signin", "actorId": actor, "arguments": ["action": action, "profile": "wrds", "username": username, "password": wrongOne]]) } catch { refused = true }
+                    try require(refused, "\(actor == chief ? "the supervisor" : "an agent") cannot \(action) a saved sign-in")
+                }
+            }
+            for action in ["provide", "remove"] {
+                var refused = false
+                do { _ = try await worker(["operation": "signin", "arguments": ["action": action, "profile": "wrds", "username": username, "password": wrongOne]]) } catch { refused = true }
+                try require(refused && BuddySignInBox.workerRefuses(["operation": "signin", "arguments": ["action": action, "profile": "wrds"]]), "only the page's sign-in bridge can \(action) one, not the worker bridge")
+            }
+            try require(saved.items[workspace + ":wrds"]?.password == password, "it is still the person's")
+            let removed = try await BuddySignInBox.handle(["action": "remove", "profile": "wrds"], workspace: workspace, support: support, store: saved)
+            let listed = try await BuddySignInBox.handle(["action": "status"], workspace: workspace, support: support, store: saved)
+            try require(removed["saved"] as? Bool == false && saved.items.isEmpty && ((listed["profiles"] as? [[String: Any]])?.first?["saved"] as? Bool) == false, "removed, and the status says not saved: \(json(listed))")
+            try saved.save(workspace: workspace, profile: "wrds", username: username, password: password)
+        }
+
         // MARK: supervisor approval of routine coding commands
 
         await section("Forge's real CBOE download (a Codex escalation) is routine: Chief approves it, it runs, the user never gets a needs-you item, and the review says who approved it") {
@@ -260,23 +306,41 @@ import Security
             try require(FileManager.default.fileExists(atPath: project(id).appendingPathComponent("verification/stage3_public_inputs/raw/SPX_CBOE.csv").path), "the approved command ran")
             let every = try everyDecision(id)
             try require(every.contains { $0.kind == "command_review" && $0.audience == "supervisor" } && !every.contains { $0.audience == "user" }, "it went to the supervisor and never to the user: \(every)")
-            let shown = fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.first { $0["kind"] as? String == "command_review" } ?? [:], what = shown["command"] as? [String: Any] ?? [:]
+            let shown = fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.first { $0["kind"] as? String == "command_review" && json($0).contains("cdn.cboe.com") } ?? [:], what = shown["command"] as? [String: Any] ?? [:]
             try require(text(what["command"]).contains("https://cdn.cboe.com/api/global/us_indices/daily_prices/SPX_History.csv") && (what["hosts"] as? [String]) == ["cdn.cboe.com"]
                         && (what["writes"] as? [String]) == ["verification/stage3_public_inputs/raw/SPX_CBOE.csv"] && text(what["reason"]).contains("SPX history"), "Chief saw the exact command, host, where it writes and why: \(shown)")
             let enumerated = fixture("supervisor").first?["enum"] as? [String] ?? []
             try require(enumerated.contains("approve_command") && enumerated.contains("decline_command"), "the lane has the two verbs: \(enumerated)")
         }
-        await section("an upload is sensitive: it stays with the user, and the supervisor never sees it") {
+        await section("a command Buddy cannot take apart goes to Chief, who reads it; the user never gets a needs-you item") {
+            // Forge on 23 Oct: seven commands Buddy could not read went to the user. Only what is on the user's list goes to them now.
             try await clearQueue()
+            try await waitForLane(true)
+            let id = try await start("CODEX_UNCLEAR: build the report.", as: forge, request: "unclear")
+            let done = try await poll(id, "the command finishes after the supervisor's answer", seconds: 60) { ["completed", "failed", "interrupted", "paused", "waiting_user"].contains($0["status"] as? String ?? "") }
+            try require(done["status"] as? String == "completed", "completed: \(done["status"] ?? "") \(done["progress"] ?? "")")
+            let review = reviews(done).first ?? [:], assessed = review["assessment"] as? [String: Any] ?? [:]
+            try require(review["route"] as? String == "supervisor" && review["answeredBy"] as? String == "supervisor" && review["answeredByName"] as? String == "Chief" && assessed["kind"] as? String == "unclear",
+                        "Chief answered it: \(review)")
+            let every = try everyDecision(id)
+            try require(!every.contains { $0.audience == "user" }, "it never went to the user: \(every)")
+            let shown = fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.last { $0["kind"] as? String == "command_review" } ?? [:], what = shown["command"] as? [String: Any] ?? [:]
+            try require(text(what["command"]).contains("make report") && what["kind"] as? String == "unclear", "Chief saw the exact command, marked as one Buddy could not read: \(shown)")
+        }
+        await section("an upload is sensitive: Chief looks for another way first and, finding none, passes it to the user with its note; only the user can approve it") {
+            try await clearQueue()
+            try await waitForLane(true)
             let id = try await start("CODEX_UPLOAD: share the results.", as: forge, request: "upload")
-            let waiting = try await poll(id, "the upload waits for the user") { pending($0) != nil }
+            let waiting = try await poll(id, "the upload waits for the user", withUser)
             let review = pending(waiting) ?? [:]
             let open = try await decisions(id)
-            try require(review["route"] as? String == "user" && open.contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" }, "the user's review: \(review["route"] ?? "-") \(open)")
+            try require(review["route"] as? String == "user" && review["screenedBy"] as? String == "Chief" && open.contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" && text($0["question"]).contains("Chief: The task needs exactly this") },
+                        "the user's review, with Chief's note: \(review["route"] ?? "-") \(open)")
             try await answer(id, review, accept: false)
             let done = try await poll(id, "the declined upload ends") { ["completed", "failed"].contains($0["status"] as? String ?? "") }
             try require(!FileManager.default.fileExists(atPath: project(id).appendingPathComponent("uploaded.txt").path) && reviews(done).first?["answeredBy"] as? String == "user", "it did not run; the user answered")
-            try require(!fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.contains { $0["workerTaskId"] as? String == id || json($0).contains("upload.example.org") }, "Chief never saw it")
+            let shown = fixture("supervisor").flatMap { $0["items"] as? [[String: Any]] ?? [] }.first { json($0).contains("upload.example.org") } ?? [:]
+            try require(text(shown["onUsersList"]).contains("send") && text(shown["expected"]) == "decline_command with another way, or forward_to_user", "Chief was told it is on the user's list and what it may do: \(shown)")
         }
         await section("a Claude coding command with network that is routine goes to the supervisor too, who can decline it; it does not run") {
             try await clearQueue()
@@ -389,9 +453,52 @@ import Security
             try require(reviews(done).first?["answeredBy"] as? String == "user" && codexLog(id).filter { $0["kind"] as? String == "decision" }.compactMap { $0["value"] as? String } == ["decline"], "the user declined it; it did not run")
             try require(!shownToSupervisor().contains { json($0).contains("CODEX_SCRIPT_SECRET") }, "the supervisor never saw it")
         }
+        // MARK: requests on the user's list: the supervisor looks for another way first
+
+        await section("Forge's request to install LibreOffice (24 Oct 2026) goes to Chief first, with what this Mac has; Chief declines it with another way, Forge hears why in its running turn and carries on, and the user is never asked") {
+            try await clearQueue()
+            try await waitForLane(true)
+            let id = try await start("CODEX_INSTALL ANOTHER_WAY: make the Word 97-2003 copy of the report.", as: forge, request: "install-another-way")
+            let done = try await poll(id, "Forge carries on another way", seconds: 60, terminal)
+            try require(done["status"] as? String == "completed" && FileManager.default.fileExists(atPath: project(id).appendingPathComponent("report.doc").path), "Forge finished another way: \(done["status"] ?? "") \(done["progress"] ?? "")")
+            let review = reviews(done).first ?? [:]
+            try require(review["route"] as? String == "screen" && review["status"] as? String == "cancelled" && review["answeredBy"] as? String == "supervisor" && review["answeredByName"] as? String == "Chief"
+                        && text(review["answerReason"]).contains("Microsoft Word is already on this Mac"), "Chief declined it, saying how instead: \(review)")
+            let steered = codexLog(id).filter { $0["kind"] as? String == "request" }.compactMap { $0["value"] as? [String: Any] }.filter { $0["method"] as? String == "turn/steer" }
+            let said = text(((steered.first?["params"] as? [String: Any])?["input"] as? [[String: Any]])?.first?["text"])
+            try require(steered.count == 1 && said.hasPrefix("[Buddy] Chief declined your command `/bin/zsh -lc 'brew install --cask libreoffice'`: Microsoft Word is already on this Mac"),
+                        "Forge heard why in its running turn: \(steered)")
+            try require(codexLog(id).filter { $0["kind"] as? String == "decision" }.compactMap { $0["value"] as? String } == ["decline"] && codexLog(id).contains { $0["kind"] as? String == "steered" }, "the install never ran, and Forge went on")
+            let every = try everyDecision(id)
+            try require(every.contains { $0.kind == "command_review" && $0.audience == "supervisor" } && !every.contains { $0.audience == "user" }, "it never reached the user: \(every)")
+            let shown = shownToSupervisor().first { json($0).contains("brew install --cask libreoffice") } ?? [:], mac = shown["thisMac"] as? [String: Any] ?? [:]
+            try require(text(shown["onUsersList"]) == BuddyCommandReview.changesMac && text(shown["expected"]) == "decline_command with another way, or forward_to_user"
+                        && !(mac["apps"] as? [String] ?? []).isEmpty && mac["homebrew"] is [String] && (shown["command"] as? [String: Any])?["routine"] == nil,
+                        "Chief was told why it is on the user's list and what this Mac has: \(shown["onUsersList"] ?? "-") \(shown["expected"] ?? "-") \(mac.keys.sorted())")
+        }
+        await section("a decline whose turn already ended is kept for the agent's next attempt") {
+            try await clearQueue()
+            try await waitForLane(true)
+            let id = try await start("CODEX_INSTALL_ENDS ANOTHER_WAY: make the Word 97-2003 copy of the report.", as: forge, request: "install-ends")
+            let done = try await poll(id, "the attempt ends", seconds: 60, terminal)
+            let kept = try await poll(id, "the note is kept") { ($0["updates"] as? [String] ?? []).contains { $0.hasPrefix("[Buddy] Chief declined your command") } }
+            try require(done["status"] as? String == "completed" && (kept["updates"] as? [String] ?? []).contains { $0.contains("Microsoft Word is already on this Mac") }, "the note waits for the next attempt: \(kept["updates"] ?? [])")
+        }
+        await section("Chief can never approve a request on the user's list: Buddy refuses it, the command does not run, and one Chief has not handled in time goes to the user as it is") {
+            try await clearQueue()
+            try await waitForLane(true)
+            let wait = BuddyWorkerHost.screenWait; BuddyWorkerHost.screenWait = 3; defer { BuddyWorkerHost.screenWait = wait }
+            let id = try await start("CODEX_INSTALL APPROVE_ANYWAY: make the Word 97-2003 copy of the report.", as: forge, request: "install-approve")
+            let waiting = try await poll(id, "the request reaches the user after the wait", seconds: 60, withUser)
+            let review = pending(waiting) ?? [:]
+            try require(review["screenedBy"] == nil && review["answeredBy"] == nil && codexLog(id).filter { $0["kind"] as? String == "decision" }.isEmpty, "Chief's approval was refused and nothing ran: \(review)")
+            try require(try await decisions(id).contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" }, "the user has it")
+            try await answer(id, review, accept: false)
+            _ = try await poll(id, "the declined request ends", terminal)
+        }
         try? models.set(workspace: workspace, agent: chief, selection: .init(provider: "claude", model: "claude-fixture"))
 
-        await section("with the supervisor lane offline (its daily limit used up), a routine command review falls back to the user") {
+        await section("with the supervisor lane offline (its daily limit used up), a command review waits for the supervisor, the user is told once why, and the supervisor answers it when the lane is back") {
             try await clearQueue()
             _ = try await worker(["operation": "limit", "scope": "agent", "agentId": chief, "amountUSD": 0.01])
             try await waitForLane(false)
@@ -399,11 +506,49 @@ import Security
             let waiting = try await poll(id, "the review waits") { pending($0) != nil }
             let review = pending(waiting) ?? [:]
             let open = try await decisions(id)
-            try require(review["route"] as? String == "user" && open.contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" }, "it is the user's: \(review["route"] ?? "-") \(open)")
-            try await answer(id, review, accept: true)
-            let done = try await poll(id, "it runs after the user's answer") { ["completed", "failed"].contains($0["status"] as? String ?? "") }
-            try require(done["status"] as? String == "completed" && reviews(done).first?["answeredBy"] as? String == "user", "the user approved it: \(reviews(done).first ?? [:])")
+            try require(review["route"] as? String == "supervisor" && !open.contains { $0["kind"] as? String == "review" && $0["audience"] as? String == "user" },
+                        "it waits for the supervisor, not the user (24 Oct: with supervision down every review went to the user): \(review["route"] ?? "-") \(open)")
+            let told = ((try await status())["decisions"] as? [[String: Any]] ?? []).filter { $0["kind"] as? String == "notice" && $0["audience"] as? String == "user" && (($0["question"] as? String) ?? "").contains("approvals wait for") }
+            try require(told.count == 1, "the user is told once why supervision waits: \(told)")
             _ = try await worker(["operation": "limit", "scope": "agent", "agentId": chief, "amountUSD": NSNull()])
+            try await waitForLane(true)
+            let done = try await poll(id, "the supervisor answers it once the lane is back") { ["completed", "failed"].contains($0["status"] as? String ?? "") }
+            try require(done["status"] as? String == "completed" && reviews(done).first?["answeredBy"] as? String == "supervisor", "the supervisor approved it: \(reviews(done).first ?? [:])")
+        }
+
+        // MARK: no per-task limits
+
+        await section("a coding task that already ran 120 commands and had 160 reviews keeps going: the record keeps the last 100 and 150, and the rest stay in the task's history file") {
+            try await clearQueue()
+            _ = try await worker(["operation": "pauseAll", "paused": true])
+            let id = try await start("MANY_FIXTURE: run one more command, then one more check.", as: clara, request: "many")
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let ran = (1...120).map { n -> [String: Any] in ["id": UUID().uuidString, "code": "echo \(n)", "network": false, "status": "completed", "exitCode": 0, "output": "\(n)\n", "at": stamp] }
+            let asked = (1...160).map { n -> [String: Any] in ["id": UUID().uuidString, "kind": "coding", "status": "completed", "route": "user", "answeredBy": "user", "answeredByName": "you", "answeredAt": stamp,
+                                                                 "tool": ["name": "Run command with network access", "service": "Buddy coding project", "arguments": ["command": "echo \(n)", "reason": "old check \(n)"]]] }
+            host.testingSeed(id, ["commands": ran, "reviews": asked])
+            _ = try await worker(["operation": "pauseAll", "paused": false])
+            var done: [String: Any] = [:]
+            let deadline = Date().addingTimeInterval(60)
+            while Date() < deadline {
+                let value = try await detail(id)
+                if let review = pending(value), review["route"] as? String == "user" { try await answer(id, review, accept: true) }
+                if terminal(value) { done = value; break }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            try require(done["status"] as? String == "completed" && text(done["result"]).hasPrefix("Ran past the old limits."), "it kept going past 100 commands and 150 reviews: \(done["status"] ?? "-") \(done["progress"] ?? "") \(done["result"] ?? "")")
+            let commands = done["commands"] as? [[String: Any]] ?? [], all = reviews(done)
+            try require(commands.contains { text($0["output"]) == "command 121\n" } && commands.contains { text($0["output"]) == "review 161\n" }, "both new commands ran: \(commands.suffix(2))")
+            try require(commands.count == 100 && done["archivedCommands"] as? Int == 22 && all.count == 150 && done["archivedReviews"] as? Int == 11,
+                        "the record keeps the last 100 commands and 150 settled reviews and counts the rest: \(commands.count)+\(done["archivedCommands"] ?? "-"), \(all.count)+\(done["archivedReviews"] ?? "-")")
+            let history = lines(support.appendingPathComponent("Worker/Tasks/\(id)/history.jsonl"))
+            let older = history.filter { $0["kind"] as? String == "command" }.compactMap { ($0["value"] as? [String: Any])?["code"] as? String }
+            try require(older == (1...22).map { "echo \($0)" } && history.filter { $0["kind"] as? String == "review" }.count == 11, "the full history is kept, oldest first, in the task's history file: \(older.prefix(3))… \(history.count) lines")
+            let status = try await worker(["operation": "coding", "agentId": clara, "arguments": ["action": "status", "taskId": id]])
+            try require(((status["task"] as? [String: Any])?["commands"] as? [Any])?.count == 100, "the agent's status of the task carries the window, not the whole history")
+            let prompt = text(fixture("start").last { text($0["prompt"]).contains("MANY_FIXTURE") }?["prompt"])
+            try require(prompt.contains("Previous native command receipts") && prompt.contains("echo 120") && !prompt.contains("\"echo 20\"") && prompt.contains("20 earlier receipts"),
+                        "the model's brief carries the recent receipts and says how many earlier ones there are: \(prompt.suffix(300))")
         }
 
         // MARK: nothing secret anywhere

@@ -194,7 +194,10 @@ test('field play: agents sleep when idle, wake one by one when chosen, and a fai
   await page.waitForFunction(()=>BuddyFieldPlay.state.unread.nova===1,null,{timeout:5000});
   await page.waitForTimeout(400);
   assert.ok(await page.evaluate(()=>window.__broken)>3,'the broken extension keeps being called');
-  const g=await geometry(page,'atlas');assert.ok(await lit(page,{x:g.cx-22,y:g.cy-22,w:44,h:44})>60,'the figures are still painted');
+  // The figures are fold figures in each row's slot (buddy-fold-agents.js), painted on their own canvas.
+  const g=await geometry(page,'atlas');
+  const painted=await page.evaluate(()=>{const c=document.querySelector('.chat-row[data-id="atlas"] .fig-slot canvas.fold-fig');if(!c)return -1;const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>140)n++;return n;});
+  assert.ok(painted>60,'the figures are still painted');
   // Still alive, not just still showing the last picture: new work shows a new cloud, and a finished reply new happy eyes.
   const cloudBox={x:g.cx+2,y:g.cy-44,w:30,h:16},before=await lit(page,cloudBox);
   await page.evaluate(()=>{BuddyFigures.setMode('atlas','working');BuddyFigures.setMode('nova','done');});await page.waitForTimeout(900);

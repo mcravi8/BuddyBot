@@ -15,14 +15,13 @@
     return raw.replace(/sk-[A-Za-z0-9_-]+/g,'[private credential]').replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/ig,'').slice(0,240)||'Open this item to review the problem and its recovery options.';
   }
   const linked=(r,t)=>t.id===r.lastTaskID||r.routineSeriesID&&t.routineSeriesID===r.routineSeriesID&&r.agentId===t.agentId;
-  // Something waiting for the supervisor (a result to review, a question an agent asked) is Chief's to handle, not the person's. It is listed
-  // only as a fallback: when the supervisor lane is not running, or the item has waited more than 15 minutes.
-  const supervisorGrace=15*60*1000;
-  function forSupervisor(d,worker,now){
-    if(d.audience!=='supervisor')return false;
-    // An item whose age cannot be read is shown: when unsure, the person sees it.
-    const age=now-Date.parse(d.createdAt||'');
-    return worker.supervisorLane?.online===true&&Number.isFinite(age)&&age<=supervisorGrace;
+  // Something waiting for the supervisor (a result to review, a question an agent asked) is Chief's to handle, not the person's, however long
+  // it waits: it is listed only while the supervisor lane is not running. One Chief cannot move reaches the person as a "the team is stuck"
+  // notice. (After 15 minutes such items used to be listed too, and the user's Needs you filled with results Chief had left days before.)
+  // Each item waits for its own supervisor's lane: a project's Chief, or the team's supervisor.
+  function forSupervisor(d,worker){
+    const lane=(d.supervisorId&&worker.supervisorLanes?.[d.supervisorId])||worker.supervisorLane;
+    return d.audience==='supervisor'&&lane?.online===true;
   }
   function collect(state,worker={},team={},now=Date.now()){
     const agents=new Set((state.agents||[]).map(a=>a.id)),groups=new Set((state.groups||[]).map(g=>g.id)),items=[];
@@ -40,7 +39,7 @@
       // An action that may or may not have gone through is something to check, whatever state the task is in.
       if(useDecisions&&agents.has(t.agentId)&&(!t.workspace||t.workspace===state.conversationWorkspace)){
         if(t.status==='completed')add({id:`task:${t.id}:${t.attempt||0}:${t.status}:${t.attentionKey||''}`,kind:'finished',title:t.title||'Agent task',description:'The task finished. Open it to see the result.',agentId:t.agentId,at:t.updatedAt||t.createdAt,taskId:t.id,actionLabel:'View result'});
-        else if(working.has(t.status))items.push({id:`working:${t.id}:${t.attempt||0}`,kind:'working',unread:false,title:t.title||'Agent task',description:String(t.progress||'Working on it.').slice(0,200),agentId:t.agentId,at:t.updatedAt||t.createdAt,taskId:t.id,actionLabel:'Open task'});
+        else if(working.has(t.status)||t.status==='paused'&&t.blockedBy==='remote')items.push({id:`working:${t.id}:${t.attempt||0}`,kind:'working',unread:false,title:t.title||'Agent task',description:String(t.progress||'Working on it.').slice(0,200),agentId:t.agentId,at:t.updatedAt||t.createdAt,taskId:t.id,actionLabel:'Open task'});
         continue;
       }
       const unsure=Number(t.unconfirmedCount)||0,asks=needs.has(t.status)||unsure>0;
@@ -50,7 +49,7 @@
     const supervisorName=d=>{const sid=tasks.find(t=>t.id===d.taskId)?.supervisorId||(worker.plans||[]).find(p=>p?.supervisorId&&agents.has(p.supervisorId))?.supervisorId;return (state.agents||[]).find(a=>a.id===sid)?.name||'Chief';};
     if(useDecisions)for(const d of worker.decisions){
       if(d.agentId&&!agents.has(d.agentId))continue;
-      if(forSupervisor(d,worker,now))continue;
+      if(forSupervisor(d,worker))continue;
       if(d.audience==='supervisor'){add({id:'decision:'+d.id,kind:'needs',title:d.title||'Waiting for the supervisor',description:['stopped','waiting','limit'].includes(d.kind)?describe(d.question):String(d.question||'').slice(0,240),note:`${supervisorName(d)} hasn’t picked this up yet. You can open it and decide yourself.`,agentId:d.agentId||undefined,at:d.createdAt,taskId:d.taskId,actionLabel:d.actionLabel||'Open task'});continue;}
       // A change asked for in chat that waits for the person's OK, and a rule that has earned its freedom (a notice, not a request).
       if(d.kind==='confirm'){add({id:'decision:'+d.id,kind:'needs',title:d.title||'Allow this change?',description:String(d.question||'').slice(0,320),agentId:d.agentId||undefined,at:d.createdAt,changeId:d.payload?.changeId,actionLabel:'Review change'});continue;}
@@ -58,6 +57,10 @@
       // A sign-in, or a step the person finishes elsewhere and confirms with Done, is answered in the agent's chat: the item opens that
       // chat at its request. The request itself is the app's; answering it there clears this item too.
       if(['credential','signin','step','mfa'].includes(d.kind)&&d.agentId&&agents.has(d.agentId)){add({id:'decision:'+d.id,kind:'needs',title:d.title||'Sign-in needed',description:String(d.question||'').slice(0,240),agentId:d.agentId,at:d.createdAt,taskId:d.taskId,chatTarget:d.agentId,focusTask:d.taskId||'',actionLabel:d.kind==='credential'?'Sign in in chat':d.kind==='signin'?'Open chat':'Open chat'});continue;}
+      // A question Chief forwarded about the plan is answered on its card in the team chat (Approve, Disapprove or Reply): the item opens that
+      // chat at the card. Opening the task instead led nowhere the person could answer.
+      const asked=d.kind==='escalation'&&d.payload?.noticeId?(worker.plans||[]).find(p=>p?.id===d.payload.planId):null;
+      if(asked&&groups.has(asked.groupId)){add({id:'decision:'+d.id,kind:'needs',title:d.title||'Needs your decision',description:String(d.question||'').slice(0,240),agentId:d.agentId||undefined,at:d.createdAt,taskId:d.taskId,chatTarget:asked.groupId,focusNotice:d.payload.noticeId,actionLabel:'Answer in chat'});continue;}
       add({id:'decision:'+d.id,kind:'needs',title:d.title||'Needs you',description:['stopped','waiting','limit'].includes(d.kind)?describe(d.question):String(d.question||'').slice(0,240),agentId:d.agentId||undefined,at:d.createdAt,taskId:d.taskId,actionLabel:d.actionLabel||'Open task'});
     }
     if(worker.workspace===state.conversationWorkspace){
@@ -81,7 +84,8 @@
     // it out of what it sends; one saved by an older build is skipped the same way.
     const latest=new Map();
     if(team.workspace===state.conversationWorkspace)for(const c of team.checks||[])if(agents.has(c.agentId)&&c.status!=='interrupted')latest.set(c.agentId+':'+c.kind,c);
-    for(const c of latest.values())if(['failed','budget'].includes(c.status))add({id:`check:${c.id}:${c.status}`,kind:'needs',title:`${name(c.agentId)} · ${c.kind==='memory'?'Saved preferences':'Team update'}`,description:describe(c.error),agentId:c.agentId,at:c.finishedAt||c.startedAt||c.createdAt,checkId:c.id,actionLabel:c.kind==='memory'?'Review preferences':'Review update'});
+    // A preference check that could not save a rule changes nothing the person relies on: it is listed under Finished, not as needing them.
+    for(const c of latest.values())if(['failed','budget'].includes(c.status))add({id:`check:${c.id}:${c.status}`,kind:c.kind==='memory'?'finished':'needs',title:`${name(c.agentId)} · ${c.kind==='memory'?'Saved preferences':'Team update'}`,description:describe(c.error),agentId:c.agentId,at:c.finishedAt||c.startedAt||c.createdAt,checkId:c.id,actionLabel:c.kind==='memory'?'Review preferences':'Review update'});
     for(const p of state.teamPlans||[])if(p.status==='pending')add({id:'plan:'+p.id,kind:'needs',title:p.label||'Team suggestion',description:'Review this proposed team before adding it.',agentId:p.actorId,at:p.createdAt,planId:p.id,actionLabel:'Review team'});
     for(const p of state.proposals||[])if(p.status==='pending'&&!p.sample)add({id:'proposal:'+p.id,kind:'needs',title:p.draft?.name||'Agent suggestion',description:'Review this proposed agent before adding them.',at:p.createdAt,action:'review-proposal',target:p.id,actionLabel:'Review agent'});
     return items.filter(i=>!i.groupId||groups.has(i.groupId)).sort((a,b)=>(a.kind==='needs'?0:1)-(b.kind==='needs'?0:1)||String(b.at||'').localeCompare(String(a.at||'')));
@@ -92,10 +96,12 @@
   // Unread alerts about background work: the number on the Background work entry, which must agree with the bell and the chat badges.
   function workUnread(items){return items.filter(i=>i.unread&&(i.taskId||i.routineId||i.id.startsWith('routine-group:')||i.id.startsWith('scheduler:'))).length;}
   function unreadCounts(items){return {needs:items.filter(i=>i.kind==='needs'&&i.unread).length,finished:items.filter(i=>i.kind==='finished'&&i.unread).length};}
+  // The bell: everything that needs the person (reading it does not settle it), and the finished work they have not looked at yet.
+  function bell(items){return {needs:items.filter(i=>i.kind==='needs').length,finished:items.filter(i=>i.kind==='finished'&&i.unread).length};}
   // The agents with something unread that needs the person: what the bell and each chat's badge count. An agent's "needs you" figure follows
   // it, so an item the person has read or dismissed (here or in the app) no longer makes the figure pulse.
   function needingAgents(items){return new Set(items.filter(i=>i.kind==='needs'&&i.unread&&i.agentId).map(i=>i.agentId));}
-  const api={collect,splitChats,describe,markRead,dismiss,unreadCounts,workUnread,needingAgents};root.BuddyActivity=api;if(typeof module!=='undefined')module.exports=api;if(typeof document==='undefined')return;
+  const api={collect,splitChats,describe,markRead,dismiss,unreadCounts,bell,workUnread,needingAgents};root.BuddyActivity=api;if(typeof module!=='undefined')module.exports=api;if(typeof document==='undefined')return;
   let worker={},team={},workerError='',tab='needs';
   // Marks alerts read, unread or dismissed. The page copy changes at once; the app's copy is the shared one and answers with the full state.
   function setState(ids,patch){
@@ -116,12 +122,68 @@
   api.chatBadge=id=>`<span class="chat-activity-badge" data-chat-activity="${esc(id)}"></span>`;
   api.hideMenu=id=>`<button type="button" class="menu-row" data-hide-agent="${esc(id)}">${icon(hidden(id)?'eye':'eye-off')}<span>${hidden(id)?'Show agent in chat list':'Hide agent'}<small>${hidden(id)?'Move back above the Hidden section.':'Keep their work running in the Hidden section.'}</small></span>${icon('chevron')}</button>`;
   api.chats=(entries,row)=>{const parts=splitChats(state,entries);return parts.visible.map(row).join('')+(parts.hidden.length?`<details class="hidden-agents" ${state.hiddenAgentsOpen||ui.chatFilter?'open':''}><summary title="${parts.hidden.length} hidden agents" aria-label="${parts.hidden.length} hidden agents"><span class="hidden-agents-label">Hidden</span><span class="hidden-agents-count">${parts.hidden.length}</span><span data-hidden-attention></span>${icon('down')}</summary>${parts.hidden.map(row).join('')}</details>`:'');};
+  // What opening an alert does: the attributes its button carries (each kind of alert is opened by its own module).
+  const opens=i=>`${i.chatTarget?`data-action="chat" data-id="${esc(i.chatTarget)}" data-signin-open="${esc(i.focusTask||'')}"${i.focusNotice?` data-plan-notice-open="${esc(i.focusNotice)}"`:''}`:i.taskId?`data-worker-task="${esc(i.taskId)}"`:i.routineId?`data-worker-routine="${esc(i.routineId)}"`:i.planId?`data-team-plan="${esc(i.planId)}"`:i.checkId?`data-team-open-check="${esc(i.checkId)}"`:i.changeId?`data-change-confirm="${esc(i.changeId)}"`:i.ruleId?`data-rule-open="${esc(i.agentId||'')}"`:`data-action="${esc(i.action)}" ${i.target?`data-id="${esc(i.target)}"`:''}`}`;
+  // What a chat's row says in place of its last message (27 Oct, design canvas "Buddy notifications and + menu", option C): what needs the
+  // person, else what the agent is doing, else background work it finished that they have not looked at. Replies and team replies are
+  // already the row's last message, so they are not repeated here.
+  function rowState(id,list){
+    const mine=i=>i.agentId===id||i.groupId===id||i.chatTarget===id||i.target===id;
+    const need=list.filter(i=>i.kind==='needs'&&mine(i));
+    if(need.length)return {kind:'needs',text:`Needs you · ${need[0].title}${need.length>1?` (+${need.length-1})`:''}`};
+    const work=list.find(i=>i.kind==='working'&&mine(i)),mood=window.BuddyFoldAgents?.current?.(id);
+    if(work)return {kind:'working',text:`Working · ${work.title}`};
+    if(mood==='talking')return {kind:'working',text:'Writing a reply…'};
+    if(mood==='thinking')return {kind:'working',text:'Working…'};
+    const done=list.find(i=>i.kind==='finished'&&i.unread&&(i.taskId||i.routineId)&&mine(i));
+    return done?{kind:'done',text:`Done · ${done.title}`}:null;
+  }
+  // The bell shows only what needs the person, on a board floating by it (under the bell, or beside the narrow sidebar), each alert opening
+  // what it is about; the bell again, Escape, a click elsewhere or choosing an alert closes it. What is working or done the rows already say.
+  // (27 Oct: the list first took the chat list's place in the sidebar, which did not fit the narrow sidebar; the person chose the board.)
+  let needsOnly=false;
+  // One alert that needs the person, as the bell's board and Background work show it.
+  const entry=i=>`<button type="button" class="activity-item needs-entry ${i.unread?'unread':''}" data-activity-id="${esc(i.id)}" ${opens(i)}><span class="needs-figure">${i.agentId&&findAgent(i.agentId)?avatar(i.agentId,true):i.groupId?groupAvatar(i.groupId,true):icon('info')}</span><span class="needs-copy"><strong>${esc(i.title)}</strong><span class="activity-description">${esc(i.description)}</span>${i.note?`<span class="activity-note">${esc(i.note)}</span>`:''}<span class="needs-action">${esc(i.actionLabel||'Review')}</span></span></button>`;
+  api.entry=entry;
+  // What needs the person: the one list the bell, the rows and Background work all read (27 Oct: Background work used to count every
+  // failed or waiting task, so it listed work Chief was handling or the person had dismissed, and disagreed with the bell).
+  api.needItems=()=>all().filter(i=>i.kind==='needs');
+  function needsList(list){
+    const need=list.filter(i=>i.kind==='needs');
+    return `<div class="needs-filter-head"><strong>Needs you${need.length?` · ${need.length}`:''}</strong><button type="button" class="small-link" data-needs-off>Close</button></div>`
+      +(need.length?need.map(entry).join(''):'<p class="needs-empty">Nothing needs you.</p>')
+      +'<button type="button" class="small-link needs-all" data-needs-all>All notifications</button>';
+  }
   function paint(){
     const list=all(),count=counts();
-    document.querySelectorAll('[data-activity-count]').forEach(el=>{el.textContent=count.needs+count.finished;el.hidden=!(count.needs+count.finished);el.classList.toggle('has-needs',count.needs>0);el.parentElement.setAttribute('aria-label',`Notifications: ${count.needs} need you, ${count.finished} finished`);});
+    // The bell's number is what needs the person, read or not; finished work only adds a dot when nothing needs them.
+    const ring=bell(list);
+    document.querySelectorAll('[data-activity-count]').forEach(el=>{el.textContent=ring.needs||'';el.hidden=!(ring.needs||ring.finished);el.classList.toggle('has-needs',ring.needs>0);el.classList.toggle('only-finished',!ring.needs&&ring.finished>0);el.parentElement.setAttribute('aria-label',`Notifications: ${ring.needs} need you, ${ring.finished} finished`);});
     document.querySelectorAll('[data-chat-activity]').forEach(el=>{const id=el.dataset.chatActivity,n=list.filter(i=>(i.agentId===id||i.groupId===id)&&i.kind==='needs'&&i.unread).length,f=list.filter(i=>(i.agentId===id||i.groupId===id)&&i.kind==='finished'&&i.unread).length;el.innerHTML=n?`<span class="activity-dot needs" title="${n} unread alerts" aria-label="${n} unread alerts">${n}</span>`:f?`<span class="activity-dot finished" title="${f} finished" aria-label="${f} finished">${icon('check')}</span>`:'';});
     const hiddenCount=list.filter(i=>hidden(i.agentId)&&i.kind==='needs'&&i.unread).length;document.querySelectorAll('[data-hidden-attention]').forEach(el=>el.textContent=hiddenCount?`${hiddenCount} unread`:'');
     const workCount=workUnread(list);document.querySelectorAll('[data-worker-badge]').forEach(el=>{el.textContent=workCount||'';el.hidden=!workCount;});
+    // Each row's state line. The app also writes the snippet itself (a reply streaming in): what it wrote is the row's own text again.
+    for(const row of document.querySelectorAll('.chat-row[data-id]')){
+      const snip=row.querySelector('.chat-snippet');if(!snip)continue;
+      if(snip.dataset.stateText===undefined||snip.textContent!==snip.dataset.stateText)snip.dataset.plain=snip.textContent;
+      const st=rowState(row.dataset.id,list),use=st&&(st.kind==='needs'||!snip.classList.contains('has-draft'));
+      const text=use?st.text:snip.dataset.plain;if(snip.textContent!==text)snip.textContent=text;
+      if(use)snip.dataset.stateText=text;else delete snip.dataset.stateText;
+      for(const k of ['needs','working','done'])snip.classList.toggle('row-'+k,!!use&&st.kind===k);
+    }
+    document.querySelectorAll('.activity-nav[data-activity-open]').forEach(b=>{b.classList.toggle('is-on',needsOnly);b.setAttribute('aria-pressed',String(needsOnly));});
+    let box=document.querySelector('[data-needs-filter]');
+    if(!needsOnly){box?.remove();return;}
+    if(!box){box=document.createElement('div');box.className='needs-filter';box.dataset.needsFilter='';box.setAttribute('role','dialog');box.setAttribute('aria-label','Needs you');document.body.appendChild(box);}
+    const html=needsList(list);if(box.dataset.html!==html){box.innerHTML=html;box.dataset.html=html;}
+    place(box);
+  }
+  // The board hangs under the bell, or beside the sidebar when it is narrow, and stays inside the window.
+  function place(box){
+    const bellEl=document.querySelector('.sidebar .activity-nav'),side=document.querySelector('.sidebar');if(!bellEl||!side)return;
+    const b=bellEl.getBoundingClientRect(),sr=side.getBoundingClientRect(),narrow=!!document.querySelector('.shell.sidebar-compact');
+    const left=narrow?sr.right+8:b.left-24,top=narrow?b.top:b.bottom+8;
+    box.style.left=`${Math.round(Math.max(8,Math.min(innerWidth-box.offsetWidth-8,left)))}px`;box.style.top=`${Math.round(Math.max(8,Math.min(innerHeight-box.offsetHeight-8,top)))}px`;
   }
   api.paint=paint;
   // On the page, from the live list (the same items, keys, read and dismissed state as the bell).
@@ -131,7 +193,7 @@
     const focus=document.activeElement?.dataset?.activityToggle,list=all(),count=counts(),shown=list.filter(i=>i.kind===tab);
     const tabButton=(id,label,n)=>`<button type="button" id="activity-${id}" role="tab" aria-controls="activity-list" aria-selected="${tab===id}" data-activity-tab="${id}">${label}${n?` <span>${n}</span>`:''}</button>`;
     const emptyText={needs:['Nothing needs you','Decisions, sign-ins and work that needs attention will appear here.'],working:['Nothing is running','Work in progress will appear here while it runs.'],finished:['No finished work yet','Completed tasks and team work will appear here.']}[tab]||['Nothing here',''];
-    panel.innerHTML=`<div class="activity-tabs" role="tablist" aria-label="Notifications">${tabButton('needs','Needs you',count.needs)}${tabButton('working','Working',list.filter(i=>i.kind==='working').length)}${tabButton('finished','Finished',count.finished)}</div><div class="activity-toolbar"><p>Badges count unread updates. Reading or dismissing an alert never approves anything, and work that still needs you stays in its task.</p>${tab!=='working'&&shown.length?`<span class="activity-toolbar-actions">${shown.some(i=>i.unread)?'<button type="button" class="small-link" data-activity-read-all>Mark all as read</button>':''}<button type="button" class="small-link" data-activity-dismiss-all>Dismiss all</button></span>`:''}</div>${workerError?`<p class="field-error" role="status">Couldn’t refresh background work. Showing saved updates. <button type="button" class="small-link" data-activity-refresh>Try again</button></p>`:''}<div class="activity-list" id="activity-list" role="tabpanel" aria-labelledby="activity-${tab}">${shown.map(i=>`<section class="activity-entry ${i.unread?'unread':''}"><button type="button" class="activity-item ${i.unread?'unread':''}" data-activity-id="${esc(i.id)}" ${i.chatTarget?`data-action="chat" data-id="${esc(i.chatTarget)}" data-signin-open="${esc(i.focusTask||'')}"`:i.taskId?`data-worker-task="${esc(i.taskId)}"`:i.routineId?`data-worker-routine="${esc(i.routineId)}"`:i.planId?`data-team-plan="${esc(i.planId)}"`:i.checkId?`data-team-open-check="${esc(i.checkId)}"`:i.changeId?`data-change-confirm="${esc(i.changeId)}"`:i.ruleId?`data-rule-open="${esc(i.agentId||'')}"`:`data-action="${esc(i.action)}" ${i.target?`data-id="${esc(i.target)}"`:''}`}><span>${i.agentId&&findAgent(i.agentId)?avatar(i.agentId,true):i.groupId?groupAvatar(i.groupId,true):icon(i.kind==='needs'?'info':i.kind==='working'?'clock':'check')}</span><span><strong>${esc(i.title)}</strong><span class="activity-description">${esc(i.description)}</span>${i.note?`<span class="activity-note">${esc(i.note)}</span>`:''}<small>${esc(i.agentId?agentName(i.agentId):i.groupId?'Team':'Buddy')}${i.at?` · ${esc(date(i.at))}`:''}</small><span class="activity-caption ${i.kind}">${esc(i.actionLabel||(i.kind==='needs'?'Review':'View result'))}</span></span>${icon('chevron')}</button>${i.kind==='working'?'':`<div class="activity-entry-footer"><span>${i.unread?'Unread':'Read'}${!i.unread&&i.kind==='needs'?' · Still needs attention':''}</span><span class="activity-entry-actions"><button type="button" class="small-link" data-activity-toggle="${esc(i.id)}">Mark as ${i.unread?'read':'unread'}</button><button type="button" class="small-link" data-activity-dismiss="${esc(i.id)}">Dismiss</button></span></div>`}</section>`).join('')||`<div class="agent-messages-empty"><h3>${emptyText[0]}</h3><p>${emptyText[1]}</p></div>`}</div>`;
+    panel.innerHTML=`<div class="activity-tabs" role="tablist" aria-label="Notifications">${tabButton('needs','Needs you',count.needs)}${tabButton('working','Working',list.filter(i=>i.kind==='working').length)}${tabButton('finished','Finished',count.finished)}</div><div class="activity-toolbar"><p>Badges count unread updates. Reading or dismissing an alert never approves anything, and work that still needs you stays in its task.</p>${tab!=='working'&&shown.length?`<span class="activity-toolbar-actions">${shown.some(i=>i.unread)?'<button type="button" class="small-link" data-activity-read-all>Mark all as read</button>':''}<button type="button" class="small-link" data-activity-dismiss-all>Dismiss all</button></span>`:''}</div>${workerError?`<p class="field-error" role="status">Couldn’t refresh background work. Showing saved updates. <button type="button" class="small-link" data-activity-refresh>Try again</button></p>`:''}<div class="activity-list" id="activity-list" role="tabpanel" aria-labelledby="activity-${tab}">${shown.map(i=>`<section class="activity-entry ${i.unread?'unread':''}"><button type="button" class="activity-item ${i.unread?'unread':''}" data-activity-id="${esc(i.id)}" ${opens(i)}><span>${i.agentId&&findAgent(i.agentId)?avatar(i.agentId,true):i.groupId?groupAvatar(i.groupId,true):icon(i.kind==='needs'?'info':i.kind==='working'?'clock':'check')}</span><span><strong>${esc(i.title)}</strong><span class="activity-description">${esc(i.description)}</span>${i.note?`<span class="activity-note">${esc(i.note)}</span>`:''}<small>${esc(i.agentId?agentName(i.agentId):i.groupId?'Team':'Buddy')}${i.at?` · ${esc(date(i.at))}`:''}</small><span class="activity-caption ${i.kind}">${esc(i.actionLabel||(i.kind==='needs'?'Review':'View result'))}</span></span>${icon('chevron')}</button>${i.kind==='working'?'':`<div class="activity-entry-footer"><span>${i.unread?'Unread':'Read'}${!i.unread&&i.kind==='needs'?' · Still needs attention':''}</span><span class="activity-entry-actions"><button type="button" class="small-link" data-activity-toggle="${esc(i.id)}">Mark as ${i.unread?'read':'unread'}</button><button type="button" class="small-link" data-activity-dismiss="${esc(i.id)}">Dismiss</button></span></div>`}</section>`).join('')||`<div class="agent-messages-empty"><h3>${emptyText[0]}</h3><p>${emptyText[1]}</p></div>`}</div>`;
     if(focus)panel.querySelector(`[data-activity-toggle="${CSS.escape(focus)}"]`)?.focus();
   }
   // Reading or dismissing an alert also settles the figures at once, rather than at the next status poll.
@@ -140,10 +202,21 @@
   api.acceptWorker=value=>{if(value.workspace!==state.conversationWorkspace)return;worker={...value,notifications:{...(value.notifications||{})}};workerError='';changed();};
   api.acceptTeam=value=>{if(value.workspace!==state.conversationWorkspace)return;team=value;changed();};
   api.workerError=error=>{workerError=String(error||'');changed();};
-  api.open=()=>{const kinds=new Set(all().map(i=>i.kind));tab=kinds.has('needs')?'needs':kinds.has('working')?'working':'finished';openDrawer('Notifications','<div data-activity-panel></div>');draw();};
+  api.open=()=>{needsOnly=true;paint();};
+  api.close=()=>{needsOnly=false;paint();};
+  // Every alert in one list, with its tabs: kept for the Background work page and anything that still asks for it.
+  api.openAll=()=>{needsOnly=false;paint();const kinds=new Set(all().map(i=>i.kind));tab=kinds.has('needs')?'needs':kinds.has('working')?'working':'finished';openDrawer('Notifications','<div data-activity-panel></div>');draw();};
   function repaintSidebar(){const old=document.querySelector('.sidebar');if(!old)return;old.outerHTML=sidebar();bindSidebarSearch();paint();}
   document.addEventListener('click',e=>{
-    if(e.target.closest('[data-activity-open]')){api.open();return;}
+    const bell=e.target.closest('[data-activity-open]');if(bell){if(bell.classList.contains('activity-nav')&&needsOnly)api.close();else api.open();return;}
+    if(e.target.closest('[data-needs-off]')){api.close();document.querySelector('.activity-nav')?.focus();return;}
+    if(needsOnly){
+      const board=document.querySelector('[data-needs-filter]');
+      if(board&&board.contains(e.target)){if(e.target.closest('.needs-entry,[data-needs-all]'))setTimeout(api.close,0);}
+      else if(!e.target.closest('[data-activity-open]'))api.close();
+    }
+    if(e.target.closest('[data-action="sidebar-layout"]'))[0,450].forEach(ms=>setTimeout(()=>{const board=document.querySelector('[data-needs-filter]');if(board)place(board);},ms));
+    if(e.target.closest('[data-needs-all]')){api.openAll();return;}
     const choice=e.target.closest('[data-activity-tab]');if(choice){tab=choice.dataset.activityTab;draw();document.querySelector(`[data-activity-tab="${tab}"]`)?.focus();return;}
     const toggle=e.target.closest('[data-activity-toggle]');if(toggle){const item=all().find(i=>i.id===toggle.dataset.activityToggle);if(item)setState([item.id],{read:item.unread});return;}
     if(e.target.closest('[data-activity-read-all]')){setState(all().filter(i=>i.kind===tab).map(i=>i.id),{read:true});return;}
@@ -154,6 +227,8 @@
     const chat=e.target.closest('[data-action="chat"]');if(chat){const ids=all().filter(i=>i.kind==='finished'&&i.unread&&(i.target===chat.dataset.id||i.agentId===chat.dataset.id)).map(i=>i.id);if(ids.length)setState(ids,{read:true});}
     if(e.target.closest('[data-activity-refresh]'))window.BuddyWorkerUI?.refresh();
   });
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&needsOnly&&!document.querySelector('.modal-overlay')){api.close();document.querySelector('.activity-nav')?.focus();}});
+  window.addEventListener('resize',()=>{const board=document.querySelector('[data-needs-filter]');if(board)place(board);});
   document.addEventListener('keydown',e=>{if(!e.target.matches('[data-activity-tab]')||!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const order=['needs','working','finished'],at=order.indexOf(tab);tab=e.key==='Home'?'needs':e.key==='End'?'finished':order[(at+(e.key==='ArrowRight'?1:order.length-1))%order.length];draw();document.querySelector(`[data-activity-tab="${tab}"]`)?.focus();});
   document.addEventListener('toggle',e=>{if(e.target.matches?.('.hidden-agents')&&!ui.chatFilter){state.hiddenAgentsOpen=e.target.open;save();}},true);
   // Opening a chat is reading what it has been telling you: its unread signal goes away (the alerts stay listed, and nothing is approved).

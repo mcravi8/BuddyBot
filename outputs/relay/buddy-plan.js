@@ -62,16 +62,26 @@
       case 'done':return {label:'Done',tone:'done'};
       case 'waived':return {label:'Skipped',tone:'idle'};
       case 'review':return {label:'Being reviewed',tone:'review'};
-      case 'blocked':return task.blockedOn==='user'?{label:'Needs you',tone:'needs'}:task.blockedOn==='retry'?{label:'Retrying',tone:'retry'}:{label:`With ${supervisor}`,tone:'review'};
+      case 'blocked':return task.blockedOn==='user'?{label:'Needs you',tone:'needs'}:task.blockedOn==='retry'?{label:'Retrying',tone:'retry'}:task.blockedOn==='paused'?{label:'Paused by you',tone:'idle'}:{label:`With ${supervisor}`,tone:'review'};
       case 'dispatched':
         if(isRetrying(task,pulse))return {label:'Retrying',tone:'retry'};
         if(live==='needs_you'||task.blockedOn==='user')return {label:'Needs you',tone:'needs'};
+        // The task's own run says best what it is doing: its command running on a rented machine, or running here, is never "Queued".
+        if(task.workerStatus==='paused'&&task.workerBlockedBy==='remote')return {label:'Running remotely',tone:'working'};
         if(live==='with_supervisor')return {label:`Asking ${supervisor}`,tone:'review'};
+        if(['starting','running','stopping'].includes(task.workerStatus))return {label:'Working',tone:'working'};
         if(live==='queued'||!live&&task.workerStatus==='queued')return {label:'Queued',tone:'ready'};
         return {label:'Working',tone:'working'};
       case 'ready':return {label:'Ready',tone:'ready'};
       default:return {label:'Waiting',tone:'idle'};
     }
+  }
+  // The way to what waits for the person: a question Chief asked is answered on its card in the team chat, so the button opens the chat
+  // there; anything else is listed in the notifications.
+  function needsButton(plan){
+    const asked=(Array.isArray(plan?.notices)?plan.notices:[]).find(n=>n?.kind==='escalation'&&(n.status||'open')==='open'&&n.chat!==false&&n.id);
+    if(asked&&plan.groupId)return `<button type="button" class="small-link plan-needs" data-action="chat" data-id="${esc(plan.groupId)}" data-plan-notice-open="${esc(asked.id)}">Answer in chat</button>`;
+    return '<button type="button" class="small-link plan-needs" data-activity-open>See what needs you</button>';
   }
   // What waits for the person: an open question Chief escalated, then any task held for them.
   function needsList(plan,names){
@@ -83,6 +93,9 @@
   const sinceOf=(task,run)=>(Array.isArray(run?.working)?run.working:[]).find(w=>w.agentId===task.assignee&&w.title===task.title)?.since||task.updatedAt;
 
   // One line that says what is happening, in plain words.
+  // What a stuck notice says, without the ask it ends with: “Chief is stuck on “…”. Say how to go on.” (since 27 Oct), or “The team is stuck
+  // on …: … Tell me how to proceed.” (before).
+  const stuckWords=t=>String(t||'').replace(/\s*(?:Tell me how to proceed|Say how to go on)\.?\s*$/,'').trim();
   function banner(plan,pulse,names,now=Date.now()){
     if(!plan)return '';
     const state=runState(plan),run=plan.run||{},stages=stagesOf(plan),total=stages.length,sup=nameOf(names,plan.supervisorId)||'Chief';
@@ -94,6 +107,8 @@
       return done?`Stage ${done.n} is done — what next?`:'Which stage should the team get done?';
     }
     if(state==='needs_you'){const items=needsList(plan,names),n=Math.max(Number(run.needsYou)||0,items.length,1);return `Needs you (${n})${items[0]?': '+items[0]:''}`;}
+    // The supervisor's background lane stopped on something: say so and why, never that the supervisor is at work on it.
+    if(state==='stuck'){const why=stuckWords(run.stuck);return why?(/^[^“:]{1,60}? is stuck on /.test(why)?why.replace(/^[^“:]{1,60}? is stuck on /,'Stuck on '):`Stuck — ${why}`):`Stuck — ${sup} can't move this forward by itself`;}
     const planning=planningStage(plan);if(planning)return `${sup} is planning Stage ${planning.n}`;
     const tasks=allTasks(plan);
     if(state==='waiting_on_supervisor'){
@@ -107,7 +122,19 @@
       if(!live.length&&dispatched.length)return `Retrying ${quoted(dispatched[0].title)}`;
       const head=`Working on Stage ${stage?.n??1} of ${total} — ${done} of ${inStage.length} tasks done`,t=live[0];
       if(!t)return head;
+      // Several teammates working at once, each on its own task (the pulse says who is busy with which): name each of them, up to three.
+      const busy=live.filter(x=>['working','quiet'].includes(liveState(x,pulse)));
+      if(busy.length>1){
+        const shown=busy.slice(0,3),rest=live.length-shown.length;
+        return `${head} — ${shown.map((x,i)=>`${nameOf(names,x.assignee)||'A teammate'}${i?' on':' is working on'} ${quoted(x.title)}${duration(sinceOf(x,run),now)}`).join(', ')}${rest>0?`, plus ${rest} more`:''}`;
+      }
       return `${head} — ${nameOf(names,t.assignee)||'A teammate'} is working on ${quoted(t.title)}${duration(sinceOf(t,run),now)}${live.length>1?`, plus ${live.length-1} more`:''}`;
+    }
+    // Only runs the person paused hold the stage: it goes on once they resume them.
+    if(state==='paused'){
+      const held=tasks.filter(t=>t.status==='blocked'&&t.blockedOn==='paused'),t=held[0],who=t&&nameOf(names,t.assignee);
+      if(held.length>1)return `You paused ${held.length} tasks — resume them to finish Stage ${stage?.n??1}`;
+      return t?`You paused ${quoted(t.title)}${who?` (${who})`:''} — resume it to finish Stage ${stage?.n??1}`:'Paused by you';
     }
     if(state==='idle'){const at=clock(run.idleSince);return at?`Idle since ${at} — nothing queued`:'Idle — nothing queued';}
     return `Working on Stage ${stage?.n??1} of ${total}`;
@@ -134,6 +161,92 @@
     const ref=notice.refs?.stageId||Number(String(notice.text||'').match(/^\s*Stage\s+(\d+)\b/i)?.[1]);
     return ref?stageDeliverables(state,plan,ref):[];
   }
+  // A stage report as the plan writes it: Chief's report, then, after an empty line, what comes next ("Next is Stage 3 — …" or "That was the
+  // last stage…"). A report written as labelled lines ("Outputs: …", "Issues: …") reads as rows; anything else stays prose.
+  const labelled=/^\s*([A-Z][A-Za-z ]{1,24}):\s+(\S[\s\S]*)$/;
+  function splitReport(text){
+    const t=String(text||'').trim(),cut=t.search(/\n\s*\n(?=\s*(?:Next is Stage \d+|That was the last stage))/);
+    const report=(cut>=0?t.slice(0,cut):t).trim(),lines=report.split('\n').map(l=>l.trim()).filter(Boolean),rows=lines.map(l=>l.match(labelled)).filter(Boolean);
+    const structured=rows.length>=2&&rows.length>=lines.length-1,lead=structured&&!labelled.test(lines[0])?lines[0]:'';
+    return {summary:lead,rows:structured?rows.map(r=>({label:r[1].trim(),text:r[2].trim()})):[],prose:structured?'':report};
+  }
+  // A question to the person: the question itself, then what led to it. Chief's questions opened with the state of the work ("Stage 5
+  // remains PARTIAL. Vera verified … May we accept …?"), and all of it was the heading. The first sentence that asks is the heading (the first
+  // sentence when none does); the rest reads under it, folded once it runs long.
+  function askParts(text){
+    const sentences=String(text||'').trim().split(/(?<=[.!?])\s+(?=[A-Z“"(*])/).map(s=>s.trim()).filter(Boolean);
+    const at=Math.max(0,sentences.findIndex(s=>/\?["”)*]*$/.test(s)));
+    return {ask:sentences[at]||'',context:sentences.filter((_,i)=>i!==at).join(' ')};
+  }
+  const noticeOf=(plan,message)=>(Array.isArray(plan?.notices)?plan.notices:[]).find(n=>'plan-notice-'+n?.id===message?.id)||null;
+  const stageOfNotice=(plan,notice,text)=>{
+    const ref=notice?.refs?.stageId,n=Number(String(text||'').match(/^\s*Stage\s+(\d+)\b/i)?.[1]);
+    return stagesOf(plan).find(s=>ref?s.id===ref:Number(s.n)===n)||null;
+  };
+  const CATEGORY={credential:'a sign-in',money_out:'money',third_party:'something sent in your name',objective:'a change to the plan',personal_fact:'something only you know'};
+  const check='<svg class="plan-card-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  // What comes after a finished stage, in a few words beside the report: started, done, the last stage, or the person's choice with its two
+  // buttons.
+  function aheadLine(plan,stage,{busy=false}={}){
+    const next=stage&&stagesOf(plan).find(s=>Number(s.n)===Number(stage.n)+1);
+    if(!next)return `<span class="plan-card-note">That was the last stage.</span>`;
+    const n=Number(next.n),started=next.status==='done'?`Stage ${n} is done`:scopeActive(plan)&&Number(plan.scope.through)>=n||['approved','working','review'].includes(next.status)?`Stage ${n} started`:'';
+    if(started)return `<span class="plan-card-settled">${check}${started}</span>`;
+    const choosing=['draft','holding'].includes(plan.status),off=busy?' disabled':'';
+    return choosing?`<span class="plan-card-actions"><button type="button" class="primary-button" data-plan-authorize="${n}"${off}>Get stage ${n} done</button><button type="button" class="small-link" data-plan-change="${n}"${off}>Change plan</button></span>`:`<span class="plan-card-note">Next: stage ${n}</span>`;
+  }
+  // The first sentence of what an agent wrote, as plain text: Markdown marks and link addresses dropped, never cut inside a word.
+  function firstLine(text,max=200){
+    const plain=String(text||'').replace(/\[([^\]\n]*)\]\((?:<[^>\n]*>|[^)\s]*)\)/g,'$1').replace(/[*_`#]+/g,'').replace(/\s+/g,' ').trim();
+    const end=plain.search(/[.!?](?=\s|$)/),first=end>=0&&end<max?plain.slice(0,end+1):plain.length<=max?plain:plain.slice(0,max-10).replace(/\s+\S*$/,'')+'…';
+    return {first,more:plain.length>first.length+1};
+  }
+  // A plan notice as a card in the chat: a stage report, a question for the person, a stuck notice, or (an authorization) one status line. A
+  // notice whose plan is no longer known, or of another kind, is null and stays a plain message.
+  function noticeCard(plan,message,{filesHTML='',markdown=s=>`<p>${esc(s)}</p>`,busy=false,reply=null}={}){
+    if(!plan||!message?.planNotice)return null;
+    const kind=message.noticeKind,text=String(message.body||'').trim(),notice=noticeOf(plan,message),refs=notice?.refs||{},off=busy?' disabled':'';
+    if(kind==='authorized'){
+      const m=text.match(/^(.*?\bauthorized)\.\s+The team is working on (.+?)\.\s+I['’]ll report/i);
+      return {line:true,html:m?`<strong>${esc(m[1])}</strong><span> · working on ${esc(m[2])}</span>`:`<span>${esc(short(text,160))}</span>`};
+    }
+    if(kind==='stage_report'){
+      // Like a teammate saying it in a Slack channel: which stage, and the point in a sentence, with the files it saved attached as a Slack
+      // message's are. What it was checked against ("Done when") and the rest of the report are a click away; it used to be a big card with
+      // all of that open.
+      const stage=stageOfNotice(plan,notice,text),{summary,rows,prose}=splitReport(text),done=stage?.status==='done';
+      const criteria=Array.isArray(stage?.acceptance)&&stage.acceptance.length?`<div class="plan-card-section"><span class="plan-card-label">Done when</span><ul class="plan-card-criteria">${stage.acceptance.map(a=>`<li class="${done?'met':''}">${done?check:'<span class="plan-card-open" aria-hidden="true"></span>'}<span>${esc(a)}</span></li>`).join('')}</ul></div>`:'';
+      const report=rows.length?`${summary?`<p class="plan-card-summary">${esc(summary)}</p>`:''}<dl class="plan-card-rows">${rows.map(r=>`<dt>${esc(r.label)}</dt><dd>${esc(r.text)}</dd>`).join('')}</dl>`:prose?`<div class="reply-markdown plan-card-prose">${markdown(prose)}</div>`:'';
+      const {first}=firstLine(summary||rows[0]?.text||prose);
+      const what=stage?`Stage ${Number(stage.n)}${done?' is done':''}`:'Stage report';
+      const files=filesHTML?`<div class="plan-card-files">${filesHTML}</div>`:'';
+      const more=report||criteria?`<details class="plan-card-more"><summary>Details</summary><div class="plan-card-more-body">${report}${criteria}</div></details>`:'';
+      // A report that opens by naming its stage ("Stage 5 is done: …") is its own first line; otherwise the line says which stage it is.
+      const named=stage&&new RegExp(`^stage\\s+${Number(stage.n)}\\b`,'i').test(first);
+      return {label:'Stage report',html:`<article class="plan-card plan-card-report plan-card-compact"><p class="plan-card-line">${named?esc(first):`<strong>${esc(what)}</strong>${first?` · ${esc(first)}`:''}`}</p>${files}<div class="plan-card-row">${more}${stage?aheadLine(plan,stage,{busy}):''}</div></article>`};
+    }
+    if(kind==='escalation'){
+      const question=String(refs.question||text.replace(/\s*My recommendation:[\s\S]*$/,'')).trim(),recommendation=String(refs.recommendation||'').trim();
+      const what=CATEGORY[refs.category],status=notice?.status||'open';
+      // Answered (or withdrawn), a question leaves the chat: only one still waiting on the person is drawn.
+      if(status!=='open')return {hidden:true};
+      const who=esc(message.whoName||'Chief'),open=!!reply?.open,id=esc(notice?.id||''),{ask,context}=askParts(question);
+      const buttons=`${recommendation?`<button type="button" class="primary-button" data-plan-answer="approve" data-notice="${id}"${off}>Approve</button><button type="button" class="border-button" data-plan-answer="disapprove" data-notice="${id}"${off}>Disapprove</button>`:''}<button type="button" class="${recommendation?'small-link':'primary-button'}" data-plan-answer="reply" data-notice="${id}" aria-expanded="${open}"${off}>Reply</button>`;
+      const form=open?`<form class="plan-card-reply" data-plan-reply="${id}"><label><span class="plan-card-label">Your answer</span><textarea rows="3" maxlength="2000" data-plan-reply-text="${id}">${esc(reply?.draft||'')}</textarea></label><button type="submit" class="primary-button"${off}>Send answer</button></form>`:'';
+      const more=context?`<details class="plan-card-more"><summary>Details</summary><p class="plan-card-context">${esc(context)}</p></details>`:'';
+      return {label:'Decision',html:`<article class="plan-card plan-card-decision open plan-card-compact"><p class="plan-card-line"><span class="plan-card-badge">Needs you${what?` · ${esc(what)}`:''}</span> <strong>${esc(ask||question)}</strong></p>${recommendation?`<p class="plan-card-suggest">${who} suggests: ${esc(recommendation)}</p>`:''}<div class="plan-card-row">${more}<span class="plan-card-actions">${buttons}</span></div>${form}</article>`};
+    }
+    if(kind==='stuck'){
+      // One plain line, like any other notice: what the team is stuck on (without the stage's long title) and a way to tell Chief. The whole
+      // reason shows on hover when the line cuts it.
+      const titles=stagesOf(plan).flatMap(s=>[`Stage ${Number(s.n)} — ${s.title}`,...(Array.isArray(s.tasks)?s.tasks:[]).map(t=>t?.title)]).filter(Boolean).sort((a,b)=>b.length-a.length);
+      let why=stuckWords(text);const on=titles.find(t=>why.startsWith(`The team is stuck on ${t}: `));
+      why=on?why.slice(`The team is stuck on ${on}: `.length):why.replace(/^The team is stuck on [^:]*:\s*/,'').replace(/^[^“:]{1,60}? is stuck on (“[^”]*”)/,'$1');
+      const {first,more}=firstLine(why,160);
+      return {line:true,label:'Stuck',html:`<strong class="plan-stuck-mark">Stuck</strong><span${more?` title="${esc(why)}"`:''}> · ${esc(first)}</span> <button type="button" class="small-link" data-plan-answer="chat">Tell ${esc(message.whoName||'Chief')}</button>`};
+    }
+    return null;
+  }
   // Notices the plan marks for the chat, not yet in it: each goes to the group's chat, or to the supervisor's own chat for a plan with no group.
   // A stage report brings the files that stage's work saved, so the deliverables are in the chat without anyone asking for them.
   function noticeTarget(state,plan){
@@ -155,9 +268,10 @@
     }
     return out;
   }
-  function deliverNotices(state,plans){
+  // `each` hears every notice as it is posted (the desktop drop, buddy-drop-events.js).
+  function deliverNotices(state,plans,each){
     const items=noticesToDeliver(state,plans);state.messages||={};
-    for(const i of items)(state.messages[i.target]||=[]).push(i.message);
+    for(const i of items){(state.messages[i.target]||=[]).push(i.message);each?.(i);}
     return items.map(i=>i.target);
   }
 
@@ -176,7 +290,7 @@
   }
 
   const chevron='<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>';
-  const TONE={draft:'ready',working:'working',waiting_on_supervisor:'review',needs_you:'needs',stage_done:'done',stopped:'idle',idle:'idle'};
+  const TONE={draft:'ready',working:'working',waiting_on_supervisor:'review',needs_you:'needs',stuck:'needs',paused:'idle',stage_done:'done',stopped:'idle',idle:'idle'};
   const tone=plan=>plan?TONE[runState(plan)]||'idle':'';
   // The same strip, folded above the composer or, docked in the project panel beside the chat, always open: its first line is then the live status,
   // not a toggle. Every button in it is the same button, handled the same way, wherever it is shown.
@@ -196,10 +310,19 @@
     if(docked)open=true;
     const line=`<span class="plan-dot" aria-hidden="true"></span><span class="plan-banner">${esc(banner(plan,pulse,names,now))}</span>`;
     const head=docked?`<div class="plan-strip-head">${line}</div>`:`<button type="button" class="plan-strip-head" data-plan-toggle aria-expanded="${open}" aria-controls="${body}">${line}${chevron}</button>`;
-    return `<section class="plan-strip tone-${TONE[state]||'idle'}${open?' open':''}${docked?' docked':''}${offline?' offline':''}" data-plan-strip="${esc(plan.id)}" data-plan-state="${esc(state)}" aria-label="Team plan">${head}${error?`<p class="plan-error" role="alert">${esc(error)}</p>`:''}<div class="plan-strip-body" id="${body}"${open?'':' hidden'}>${offline?'<p class="plan-offline">Background work is offline, so this may be out of date.</p>':''}${plan.objective?`<p class="plan-objective"><span>Objective</span>${esc(plan.objective)}</p>`:''}${state==='needs_you'?'<button type="button" class="small-link plan-needs" data-activity-open>See what needs you</button>':''}<ol class="plan-stages">${stagesOf(plan).map(stage).join('')}</ol>${footer}</div></section>`;
+    return `<section class="plan-strip tone-${TONE[state]||'idle'}${open?' open':''}${docked?' docked':''}${offline?' offline':''}" data-plan-strip="${esc(plan.id)}" data-plan-state="${esc(state)}" aria-label="Team plan">${head}${error?`<p class="plan-error" role="alert">${esc(error)}</p>`:''}<div class="plan-strip-body" id="${body}"${open?'':' hidden'}>${offline?'<p class="plan-offline">Background work is offline, so this may be out of date.</p>':''}${plan.objective?`<p class="plan-objective"><span>Objective</span>${esc(plan.objective)}</p>`:''}${state==='needs_you'?needsButton(plan):''}<ol class="plan-stages">${stagesOf(plan).map(stage).join('')}</ol>${footer}</div></section>`;
   }
 
-  const api={planFor,stageChip,taskChip,banner,noticesToDeliver,deliverNotices,stripHTML,currentStage,replyOutcome,tone,stageDeliverables,noticeFiles};
+  // The plan in one line above the chat's composer: a segment for each stage (done, being worked on, still to come) and, in plain words, what
+  // is happening now. It opens the plan view, where the whole plan and its buttons are.
+  function stageStripHTML(plan,pulse,names,{now=Date.now(),offline=false}={}){
+    if(!plan)return '';
+    const said=banner(plan,pulse,names,now),seg=s=>`<span class="stage-seg${s.status==='done'?' done':['approved','working','review'].includes(s.status)?' now':''}"></span>`;
+    const arrow='<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg>';
+    return `<button type="button" class="stage-strip tone-${TONE[runState(plan)]||'idle'}${offline?' offline':''}" data-chat-view="plan" data-stage-strip="${esc(plan.id)}" aria-label="Open the plan. ${esc(said)}"><span class="stage-segs" aria-hidden="true">${stagesOf(plan).map(seg).join('')}</span><span class="plan-banner">${esc(said)}</span>${offline?'<span class="stage-offline">May be out of date</span>':''}${arrow}</button>`;
+  }
+
+  const api={planFor,stageChip,taskChip,banner,noticesToDeliver,deliverNotices,stripHTML,stageStripHTML,currentStage,replyOutcome,tone,stageDeliverables,noticeFiles,splitReport,askParts,firstLine,noticeCard};
   root.BuddyPlan=api;if(typeof module!=='undefined')module.exports=api;
   if(typeof document==='undefined')return;
 
@@ -216,35 +339,44 @@
     for(const name of ['data-plan-toggle','data-plan-authorize','data-plan-change','data-plan-stop'])if(el?.hasAttribute?.(name)){const v=el.getAttribute(name);return v?`[${name}="${CSS.escape(v)}"]`:`[${name}]`;}
     return null;
   }
-  // The plan of the chat on screen, if it has one (the project panel shows it when there is room).
+  // The plan of the chat on screen, if it has one (the chat then offers its plan view).
   const active=()=>typeof ui!=='undefined'&&ui.view?.kind==='chat'?planFor(state,ui.view,current().plans):null;
-  // Same pattern as the setup offer: the strip sits at the top of the composer area and is redrawn only when what it says changes. While the
-  // project panel beside the chat has a place for the plan, the strip is there instead, open, and not above the composer.
+  // Same pattern as the setup offer: redrawn only when what it says changes. In the plan view the whole plan is in the view's slot, open; in the
+  // chat it is one line at the top of the composer area that opens that view.
   function mount(){
-    const strips=[...document.querySelectorAll('.plan-strip')];
-    const inChat=typeof ui!=='undefined'&&ui.view?.kind==='chat',slot=inChat?document.querySelector('[data-project-plan-slot]'):null;
-    const wrap=inChat?slot||document.querySelector('.composer-wrap'):null,docked=!!slot;
-    const {snapshot,plans}=current(),plan=wrap?planFor(state,ui.view,plans):null,old=strips.find(el=>el.parentElement===wrap);
-    for(const el of strips)if(el!==old||!plan)el.remove();
+    const inChat=typeof ui!=='undefined'&&ui.view?.kind==='chat';
+    const {snapshot,plans}=current(),plan=inChat?planFor(state,ui.view,plans):null;
+    // Both places are kept while the chat is on screen, so moving between the chat and its plan view never draws either again.
+    const slot=inChat?document.querySelector('[data-project-plan-slot]'):null,wrap=inChat?document.querySelector('.composer-wrap'):null;
+    for(const el of document.querySelectorAll('.plan-strip,.stage-strip'))if(!plan||el.parentElement!==slot&&el.parentElement!==wrap)el.remove();
     if(!plan)return;
     // A refusal stays on the strip until the next tap, or until the plan itself moves on.
     if(failures.has(plan.id)&&failures.get(plan.id).state!==keyOf(plan))failures.delete(plan.id);
-    const html=stripHTML(plan,root.BuddyWorkerUI?.pulse?.(),names(),{open:isOpen(plan),docked,busy,offline:snapshot.online===false,error:failures.get(plan.id)?.message||''});
+    const offline=snapshot.online===false,pulse=root.BuddyWorkerUI?.pulse?.();
+    if(slot)place(slot,stripHTML(plan,pulse,names(),{open:true,docked:true,busy,offline,error:failures.get(plan.id)?.message||''}),true);
+    if(wrap)place(wrap,stageStripHTML(plan,pulse,names(),{offline}),false);
+  }
+  function place(host,html,docked){
+    const old=[...host.children].find(el=>el.matches('.plan-strip,.stage-strip'));
     if(old&&shown.get(old)===html)return;
-    const chat=document.getElementById('chat-body'),bottom=!!chat&&chat.scrollHeight-chat.scrollTop-chat.clientHeight<120;
+    const chat=document.getElementById('chat-body'),bottom=!docked&&!!chat&&chat.scrollHeight-chat.scrollTop-chat.clientHeight<120;
     const focus=old&&old.contains(document.activeElement)?focusKey(document.activeElement):null,scroll=old?.querySelector('.plan-strip-body')?.scrollTop||0;
+    const view=host.closest('[data-chat-pane]'),had=docked&&!!old&&!!view&&!view.hidden&&(old.contains(document.activeElement)||document.activeElement===document.body);
     const holder=document.createElement('div');holder.innerHTML=html;const next=holder.firstElementChild;shown.set(next,html);
-    if(old)old.replaceWith(next);else wrap.insertAdjacentElement('afterbegin',next);
+    if(old)old.replaceWith(next);else host.insertAdjacentElement('afterbegin',next);
     const inner=next.querySelector('.plan-strip-body');if(inner)inner.scrollTop=scroll;
-    if(focus)next.querySelector(focus)?.focus({preventScroll:true});
+    // A button that went with the redraw (a stage now started) leaves focus in the view, not on the page.
+    if(focus&&next.querySelector(focus))next.querySelector(focus).focus({preventScroll:true});else if(had)view.focus({preventScroll:true});
     if(bottom)chat.scrollTop=chat.scrollHeight;
   }
   function deliver(){
     const {plans}=current();if(!plans.length)return;
-    const targets=deliverNotices(state,plans);if(!targets.length)return;
+    const targets=deliverNotices(state,plans,item=>root.BuddyDrop?.notice?.(state,item));if(!targets.length)return;
     save();for(const target of new Set(targets))refreshLiveChat(target);
   }
+  // A change is said in the chat: from the plan view, the chat comes back for it.
   function change(n){
+    root.BuddyProjectDock?.show?.('chat');
     const input=document.getElementById('message-input');if(!input)return;
     input.value=`Stage ${n}: `+input.value.replace(/^Stage \d+:\s*/,'');
     input.dispatchEvent(new Event('input'));input.focus();input.setSelectionRange(input.value.length,input.value.length);
@@ -261,18 +393,68 @@
     }else if(!outcome.ok){failures.set(args.planId,{message:outcome.message,state:keyOf(plan)});showToast(outcome.message);}
     await root.BuddyWorkerUI.refresh(false);
   }
+  // A question for the person, answered from its card in the chat: Approve and Disapprove say so in plain words, Reply sends what they write.
+  // Each is their own tap, sent as their answer, exactly as their reply in the chat would be.
+  const replies=new Map();
+  const answers={approve:advice=>`Approved. Go ahead${advice?` with your recommendation: ${advice}`:'.'}`,disapprove:()=>'Not approved. Don’t go ahead with that; find another way or ask me again.'};
+  async function answer(plan,noticeId,text){
+    const said=String(text||'').trim().slice(0,2000);if(!said)return;
+    await send(plan,{action:'answer',planId:plan.id,escalationId:noticeId,answer:said,quote:said});
+    if(!failures.has(plan.id)){replies.delete(noticeId);showToast(`Sent to ${(typeof findAgent==='function'&&findAgent(plan.supervisorId)?.name)||'Chief'}.`);}
+    redrawCards(true);
+  }
+  // The cards in the chat follow the plan: a stage started, a question answered, buttons off while a tap is on its way.
+  let drawn='',drawnFor='';
+  function redrawCards(force=false){
+    if(typeof ui==='undefined'||ui.view?.kind!=='chat'||typeof refreshLiveChat!=='function')return;
+    const target=ui.view.target,ids=new Set((state.messages?.[target]||[]).filter(m=>m?.planNotice).map(m=>m.planId));if(!ids.size)return;
+    const plans=current().plans.filter(p=>ids.has(p?.id));
+    const sig=JSON.stringify([busy,plans.map(p=>[p.id,p.status,p.scope,stagesOf(p).map(s=>s.status),(p.notices||[]).map(n=>[n.id,n.status,n.refs?.answer||''])])]);
+    // A chat just drawn already shows what the plan says; only a change after that draws its cards again.
+    const fresh=drawnFor!==target;if(sig===drawn&&!fresh&&!force)return;
+    drawn=sig;drawnFor=target;if(!fresh||force)refreshLiveChat(target);
+  }
+  // A question's card, opened from its notification or from the plan view: once the chat is open, its Chat view shows and the card comes
+  // into view with its first answer button focused.
+  document.addEventListener('click',e=>{
+    const id=e.target.closest?.('[data-plan-notice-open]')?.dataset.planNoticeOpen;if(!id)return;
+    const until=Date.now()+2500;let shown=false;
+    const reach=()=>{
+      // The drawer closes with a short animation, and the chat cannot take focus until it has gone.
+      if((document.getElementById('app')?.inert||document.querySelector('.modal-overlay'))&&Date.now()<until)return setTimeout(reach,50);
+      if(!shown){shown=true;root.BuddyProjectDock?.show?.('chat');}
+      const card=[...document.querySelectorAll('[data-plan-answer][data-notice]')].find(x=>x.dataset.notice===id)?.closest('.plan-card');
+      if(!card){if(Date.now()<until)setTimeout(reach,50);return;}
+      card.scrollIntoView({block:'center'});card.querySelector('button:not([disabled])')?.focus({preventScroll:true});
+    };
+    setTimeout(reach,30);
+  });
   document.addEventListener('click',async e=>{
-    const el=e.target.closest?.('[data-plan-toggle],[data-plan-authorize],[data-plan-change],[data-plan-stop]');if(!el)return;
-    const id=el.closest('.plan-strip')?.dataset.planStrip,plan=current().plans.find(p=>p.id===id);if(!plan)return;
+    // The second click of a double-click is not a new tap: the card it was meant for may have just gone, and the next one moved under the pointer.
+    const el=e.target.closest?.('[data-plan-toggle],[data-plan-authorize],[data-plan-change],[data-plan-stop],[data-plan-answer]');if(!el||e.detail>1)return;
+    const id=el.closest('[data-plan-strip]')?.dataset.planStrip||el.closest('[data-plan-card]')?.dataset.planCard,plan=current().plans.find(p=>p.id===id);if(!plan)return;
     if(el.hasAttribute('data-plan-toggle')){chosen.set(keyOf(plan),!isOpen(plan));mount();return;}
     if(el.hasAttribute('data-plan-change')){change(Number(el.dataset.planChange));return;}
+    if(el.dataset.planAnswer==='chat'){document.getElementById('message-input')?.focus();return;}
+    if(el.dataset.planAnswer==='reply'){
+      const n=el.dataset.notice,r=replies.get(n)||{open:false,draft:''};replies.set(n,{...r,open:!r.open});redrawCards(true);
+      if(!r.open)document.querySelector(`[data-plan-reply-text="${CSS.escape(n)}"]`)?.focus();
+      return;
+    }
     if(busy||el.disabled)return;
     // The tap is the person's own decision; its words are the button's.
     if(el.hasAttribute('data-plan-authorize'))await send(plan,{action:'authorize',planId:plan.id,through:Number(el.dataset.planAuthorize),quote:el.textContent.trim()});
     else if(el.hasAttribute('data-plan-stop')&&confirm('Stop this plan? Nothing new will start and work in progress is paused. You can choose a stage again later.'))await send(plan,{action:'stop',planId:plan.id});
+    else if(el.dataset.planAnswer in answers){const n=noticeOf(plan,{id:'plan-notice-'+el.dataset.notice});if(n)await answer(plan,n.id,answers[el.dataset.planAnswer](String(n.refs?.recommendation||'').trim()));}
   });
-  root.addEventListener('buddy-view-updated',mount);
-  root.addEventListener('buddy-worker-snapshot',()=>{deliver();mount();});
+  document.addEventListener('input',e=>{const n=e.target?.dataset?.planReplyText;if(n!==undefined)replies.set(n,{...(replies.get(n)||{}),open:true,draft:e.target.value});});
+  document.addEventListener('submit',async e=>{
+    const form=e.target.closest?.('[data-plan-reply]');if(!form)return;e.preventDefault();
+    const plan=current().plans.find(p=>p.id===form.closest('[data-plan-card]')?.dataset.planCard);if(!plan||busy)return;
+    await answer(plan,form.dataset.planReply,form.querySelector('textarea')?.value);
+  });
+  root.addEventListener('buddy-view-updated',()=>{mount();redrawCards();});
+  root.addEventListener('buddy-worker-snapshot',()=>{deliver();mount();redrawCards();});
   // A stage report brings its stage's files. One delivered before they were kept with it is drawn with them too, read from the plan; what was
   // saved stays as it was. A chat is drawn again for every streamed word, so they are looked up once per status reply (each brings new plan
   // objects, and with them any new results).
@@ -286,13 +468,22 @@
     if(!known.has(m.id))known.set(m.id,noticeFiles(state,plan,notice));
     return known.get(m.id);
   }
-  // In a group, a plan notice is Chief's message: shown under Chief's name and figure, like each member's own message in the group.
+  // In a group, a plan notice is Chief's message: shown under Chief's name and figure, like each member's own message in the group. A notice
+  // of a known plan is a card (a stage report, a decision, a stuck notice) or, for an authorization, one status line.
   if(typeof root.messageHTML==='function'){
     const original=root.messageHTML;
     root.messageHTML=function(m){
       if(!m?.planNotice)return original.apply(this,arguments);
-      const files=deliverablesOf(m),agent=typeof findAgent==='function'?findAgent(m.who):null;
-      if(!agent||typeof findGroup!=='function'||!findGroup(ui.view?.target))return original.call(this,files.length&&!m.files?.length?{...m,files}:m);
+      const files=deliverablesOf(m),agent=typeof findAgent==='function'?findAgent(m.who):null,group=!!agent&&typeof findGroup==='function'&&!!findGroup(ui.view?.target);
+      const plan=current().plans.find(p=>p?.id===m.planId),noticeId=String(m.id||'').replace(/^plan-notice-/,'');
+      const card=plan?noticeCard(plan,{...m,whoName:agent?.name},{filesHTML:root.BuddyFiles?.cards?.(files)||'',markdown:s=>BuddyMarkdown.render(s),busy,reply:replies.get(noticeId)}):null;
+      if(card?.hidden)return '';
+      if(card?.line)return `<div class="message plan-status-line${card.label==='Stuck'?' is-stuck':''}" data-plan-card="${esc(plan.id)}"><p><span class="plan-dot" aria-hidden="true"></span>${card.html}${m.time?`<time>${esc(m.time)}</time>`:''}</p></div>`;
+      if(card){
+        const author=group?(typeof authorColor==='function'?`<button type="button" class="message-author" style="${authorColor(agent)}" data-action="agent-info" data-id="${esc(agent.id)}">${esc(agent.name)}</button>`:`<strong>${esc(agent.name)}</strong>`):'';
+        return `<div class="message bot-message plan-notice plan-card-message${group?' team-chat-contribution':''}" data-plan-card="${esc(plan.id)}">${group?avatar(agent.id,true):''}<div class="bot-bubble">${group?`<div class="team-chat-author">${author}<span>${esc(card.label)}</span></div>`:''}${card.html}<time>${esc(m.time||'')}</time></div></div>`;
+      }
+      if(!agent||!group)return original.call(this,files.length&&!m.files?.length?{...m,files}:m);
       const author=typeof authorColor==='function'?`<button type="button" class="message-author" style="${authorColor(agent)}" data-action="agent-info" data-id="${esc(agent.id)}">${esc(agent.name)}</button>`:`<strong>${esc(agent.name)}</strong>`;
       return `<div class="message bot-message team-chat-contribution plan-notice">${avatar(agent.id,true)}<div class="bot-bubble"><div class="team-chat-author">${author}<span>Team plan</span></div><div class="reply-markdown">${BuddyMarkdown.render(m.body)}</div>${root.BuddyFiles?.cards?.(files)||''}<time>${esc(m.time||'')}</time></div></div>`;
     };

@@ -3,10 +3,11 @@
 
 It reads the lane's start command, records what it was given in fixture-calls.jsonl (next to the run folders), and answers with the
 structured actions the test chose in fixture-mode.txt: auto (accept results, answer questions, give a task that lacks a coding tool back
-as a coding task, resume stops, plan empty stages, finish stage checks), forward, bogus, hold, refuse (a rework with no instruction), plainanswer (answer every question), reworkcode (send a result
-back with an instruction that runs code), fail (an error from Claude) or nostart (the process never
-starts, as on the user's Mac at 17:25)."""
-import json, sys
+as a coding task, resume stops, start a cancelled run's task again with its assignee, plan empty stages, finish stage checks), forward, bogus, hold, refuse (a rework with no instruction), plainanswer (answer every question), resumeall (resume every item), reworkcode (send a result
+back with an instruction that runs code), holdresume (hold until the user says "Resume S01", the window having expired),
+forwardresume (ask the user for a file and to say "Resume S01"), forwardfile (ask the user for a file at a path), reworkwindow (a rework
+that sets an eight-hour ceiling), fail (an error from Claude) or nostart (the process never starts, as on the user's Mac at 17:25)."""
+import json, re, sys
 from pathlib import Path
 
 ANSWER = 'Use Table 2 of the paper; it is the published baseline.'
@@ -46,6 +47,14 @@ for line in sys.stdin:
         'commandText': 'A command review item is a coding command' in c['instructions'] and 'Never approve anything that sends data out' in c['instructions'],
         'taskKinds': [(i.get('task') or {}).get('kind', '') for i in items],
         'kindRule': 'coding for anything that runs code' in c['instructions'] and 'never the user' in c['instructions'] and 'is the go-ahead for its tasks' in c['instructions'],
+        'cancelled': [i.get('cancelled', '') for i in items],
+        'cancelRule': 'A cancelled item is a plan task whose run was cancelled outside your actions' in c['instructions'],
+        'lasts': 'stays authorized until it is done or the user stops the plan' in c['instructions'] and 'never set or enforce a time window' in c['instructions'],
+        'lastsData': (brief.get('authorization') or {}).get('lasts', '') if isinstance(brief.get('authorization'), dict) else '',
+        'userAnswers': [i.get('userAnswer', '') for i in items],
+        'pathField': 'path' in schema['properties']['actions']['items']['properties'],
+        'messages': [(i.get('message') or {}).get('text', '') for i in items],
+        'messageRule': 'answer a message item (a teammate wrote to you)' in c['instructions'],
     }
     with (folder / 'fixture-calls.jsonl').open('a') as f:
         f.write(json.dumps(call) + '\n')
@@ -61,13 +70,32 @@ for line in sys.stdin:
         key, kind = i['key'], i['kind']
         if mode == 'hold':
             actions.append({'item': key, 'do': 'hold', 'reason': 'Waiting to see more.'})
+        elif mode == 'holdresume':
+            # Chief's hold on the user's S01: a trigger it waits for, and a time window it set itself.
+            actions.append({'item': key, 'do': 'hold', 'reason': 'S01 stays PARTIAL until the user explicitly says “Resume S01”; the original eight-hour window has expired.'})
+        elif mode == 'forwardresume':
+            actions.append({'item': key, 'do': 'forward_to_user', 'category': 'credential', 'reason': 'The expired run cannot restart automatically.',
+                            'text': 'Please save the published PDF in Research/stages/S01_protocol/source_retry/. Then say “Resume S01.”', 'recommendation': 'Provide the PDF and trigger Resume S01.'})
+        elif mode == 'forwardfile':
+            actions.append({'item': key, 'do': 'forward_to_user', 'category': 'credential', 'reason': 'Only the user can get the published PDF.',
+                            'text': 'Please save the published PDF in Research/stages/S01_protocol/source_retry/.', 'recommendation': 'Use your USC library access.',
+                            'path': 'Research/stages/S01_protocol/source_retry/'})
+        elif mode == 'reworkwindow' and kind == 'result':
+            actions.append({'item': key, 'do': 'rework', 'reason': 'S01 is partial.',
+                            'text': 'Resume S01 from its saved checkpoint. Enforce a fresh eight-hour elapsed ceiling and record the start. Verify Figure 1 against the published PDF.'})
         elif mode == 'forward':
             actions.append({'item': key, 'do': 'forward_to_user', 'reason': 'Only the user can sign in.', 'category': 'credential',
                             'text': 'Forge needs you to sign in to the data portal.', 'recommendation': 'Sign in with your university account.'})
         elif mode == 'plainanswer' and kind == 'question':
             actions.append({'item': key, 'do': 'answer', 'reason': 'Carry on.', 'text': 'Continue in the Chief-owned coding session.'})
+        elif mode == 'resumeall':
+            actions.append({'item': key, 'do': 'resume', 'reason': 'Carry on.'})
         elif mode == 'reworkcode' and kind == 'result':
             actions.append({'item': key, 'do': 'rework', 'reason': 'S01 is partial.', 'text': REWORK})
+        elif mode == 'reassignall' and kind in ('cancelled', 'dispatch_blocked'):
+            # Chief on the user's S02a: the task's start is refused each time, and Chief gives it to the engineer again each time.
+            found = re.search(r'\(([^()]*)\)\s*$', (i.get('task') or {}).get('assignee', ''))
+            actions.append({'item': key, 'do': 'reassign', 'assignee': found.group(1) if found else '', 'reason': 'Forge is the engineer; start it again.'})
         elif mode == 'refuse':
             actions.append({'item': key, 'do': 'rework', 'reason': 'Needs another pass.'} if kind == 'result' else {'item': key, 'do': 'hold', 'reason': 'Waiting to see more.'})
         elif mode == 'bogus':
@@ -82,6 +110,10 @@ for line in sys.stdin:
             actions.append({'item': key, 'do': 'accept', 'reason': 'It delivers the deliverable.'})
         elif kind in ('stopped', 'paused'):
             actions.append({'item': key, 'do': 'resume', 'reason': 'A technical stop.'})
+        elif kind == 'cancelled':
+            # The briefing names the assignee as "Name (id)".
+            found = re.search(r'\(([^()]*)\)\s*$', (i.get('task') or {}).get('assignee', ''))
+            actions.append({'item': key, 'do': 'reassign', 'assignee': found.group(1) if found else '', 'reason': 'The stage still needs the baseline; start it again.'})
         elif kind == 'stage_plan':
             ids = {m.get('name'): m.get('id') for m in brief.get('members', [])}
             actions.append({'item': key, 'do': 'add_tasks', 'reason': 'Stage 2 is authorized and has no tasks yet.', 'tasks': [
@@ -94,6 +126,8 @@ for line in sys.stdin:
             done = ['task:' + t['id'] for t in stage.get('tasks', []) if t.get('status') == 'done']
             actions.append({'item': key, 'do': 'stage_done', 'reason': 'Every criterion is met.', 'evidence': done,
                             'text': 'Stage 1 is done: the baseline reproduces and Vera signed off. Files: baseline.csv. Decisions I made: Table 2 is the baseline. Open: none.'})
+        elif kind == 'message':
+            actions.append({'item': key, 'do': 'answer', 'reason': 'A clear ask with another way to the same result.', 'text': 'Yes, take the PDF route; the export stays as checked.'})
         elif kind == 'command_review':
             actions.append({'item': key, 'do': 'approve_command', 'reason': 'A public download the stage needs, saved inside the project.'})
         else:
