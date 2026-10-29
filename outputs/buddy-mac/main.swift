@@ -473,15 +473,19 @@ import AppKit
                 if payload["kind"] as? String == "group" {
                     let state = try workspaceState()
                     var request = try BuddyTeamRequest.from(workspace: state, payload: payload)
+                    // An answer to a reply block: only what the person typed counts as their words (the options are the agent's).
+                    request.authorizedText = BuddyBlocks.typedText(payload)
                     let agents=state["agents"] as? [[String:Any]] ?? []
                     let plans=BuddyPlanStore.readOnlySummary(support:supportURL,workspace:request.workspace)
                     let group=(state["groups"] as? [[String:Any]] ?? []).first{$0["id"] as? String==request.groupId}
                     // One supervisor for the round: the saved team supervisor the members' prompts name, else the group plan's, else the group's manager.
                     request.supervisorId=BuddyAutonomy.groupSupervisor(candidates:[BuddyAutonomy.policySupervisor(support:supportURL,workspace:request.workspace,state:state),BuddyPlanChat.livePlan(plans,group:request.groupId)?["supervisorId"] as? String,group?["managedBy"] as? String],members:request.members.map(\.id))
                     // "get stage 1 done" is recorded by the app itself. With little else said, the supervisor alone answers.
-                    let stages=BuddyPlanChat.intercept(scope:BuddyPlanIntent.scope(request.text).map{($0.through,$0.remainder)},plans:plans,chat:request.groupId,agent:nil,isGroup:true)
+                    let stages=BuddyPlanChat.intercept(scope:BuddyPlanIntent.scope(request.authorizedText ?? request.text).map{($0.through,$0.remainder)},plans:plans,chat:request.groupId,agent:nil,isGroup:true)
                     if let stages,BuddyPlanChat.supervisorOnly(remainder:stages.remainder),let lead=request.supervisorId,let only=request.members.first(where:{$0.id==lead}) {
+                        let typed=request.authorizedText
                         request=BuddyTeamRequest(runId:request.runId,key:request.key,workspace:request.workspace,groupId:request.groupId,name:request.name,objective:request.objective,text:request.text,members:[only],history:request.history,supervisorId:lead)
+                        request.authorizedText=typed
                     }
                     // A teammate its team plan briefed in full starts with that brief, as "Use their instructions" would; only the rest still wait.
                     let notReady=try agentSetup.adoptTeamBriefs(workspace:request.workspace,members:request.members.map(\.id),agents:agents)
@@ -490,11 +494,11 @@ import AppKit
                         throw BuddyFailure(message:"\(names) \(notReady.count>1 ? "haven't":"hasn't") finished setup. Choose “Use their instructions” above the message box, or answer their first question in their own chat.")
                     }
                     request.fileScope = try conversations.projectFiles.scope(request.workspace)
-                    noteUserWrote(workspace:request.workspace,chat:request.groupId,text:request.text)
+                    noteUserWrote(workspace:request.workspace,chat:request.groupId,text:request.authorizedText ?? request.text)
                     guard let stages else { replyHandler(try teamwork.send(request), nil); return }
                     let ready=request
                     Task {
-                        let outcome=await self.authorizeStages(stages,workspace:ready.workspace,text:ready.text,runId:ready.runId,state:state)
+                        let outcome=await self.authorizeStages(stages,workspace:ready.workspace,text:ready.authorizedText ?? ready.text,runId:ready.runId,state:state)
                         for member in ready.members {
                             let lead=member.id==ready.supervisorId
                             self.planTurnNotes[member.id]=(ready.runId,outcome.through.map{BuddyPlanChat.authorizedNote(through:$0,supervisor:lead)} ?? BuddyPlanChat.authorizeFailed(outcome.error,supervisor:lead))
@@ -508,13 +512,14 @@ import AppKit
                 let currentAgent=(try workspaceState()["agents"] as? [[String:Any]] ?? []).first{$0["id"] as? String==agent}
                 guard currentAgent?["setupStatus"] as? String != "pending" || agentSetup.ready(workspace:context.workspace,agent:agent) else {throw BuddyFailure(message:"Finish this agent's questions or edit its instructions in settings first.")}
                 var options = BuddyTurnOptions()
-                options.authorizedUserText=payload["text"] as? String ?? ""
+                // An answer to a reply block: only what the person typed counts as their words (the options are the agent's).
+                options.authorizedUserText=BuddyBlocks.typedText(payload) ?? payload["text"] as? String ?? ""
                 options.requiresProactive=BuddyWorkerClient.proactiveRequest(options.authorizedUserText)
                 options.fileScope = try conversations.projectFiles.scope(context.workspace)
                 options.actorId = agent
                 options.extraTools = BuddyWorkerClient.chatTools
-                options.requiresRoutine = BuddyWorkerClient.recurringRequest(payload["text"] as? String ?? "")
-                options.requiresRule = BuddyWorkerClient.stagedRuleRequest(payload["text"] as? String ?? "")
+                options.requiresRoutine = BuddyWorkerClient.recurringRequest(options.authorizedUserText)
+                options.requiresRule = BuddyWorkerClient.stagedRuleRequest(options.authorizedUserText)
                 options.instructions = "For explicit coding/build/test requests or requests to use Claude Code, call buddy_coding_session directly with a complete task brief; it is a native worker tool, not a connected service. Check status for real results. For an explicit recurring request (run this every morning/daily/weekly), call buddy_manage_routine now. Carry the relevant user brief from history into the goal. For email, choose a targeted search with follow-ups and an explicit lookback window. Default to 09:00 local for an unspecified morning, state that assumption and the saved next run. Do not create a one-off task instead. Never claim scheduled without saved=true and a routine ID. Do not schedule hypothetical examples or questions. Use list/update/pause/resume/delete for existing routines. Results and controls are in Background work. This Mac must be awake and online; a missed run catches up once. "
                 options.instructions += "\n"+BuddyWorkerClient.taskGuidance+"\n"+BuddyWorkerClient.teamGuidance+"\n"+BuddyWorkerClient.settingsGuidance+"\n"+BuddyAgentMemory.guidance(currentAgent ?? [:])+"\n"+BuddyRulesReader.guidance(support:supportURL,workspace:context.workspace,agent:agent)
                 let supervisor=BuddyAutonomy.supervisor(support:supportURL,workspace:context.workspace,state:try workspaceState(),agent:agent)

@@ -123,6 +123,9 @@ struct BuddyTeamRequest: Sendable {
     var fileScope: BuddyFileScope? = nil
     /// The member who supervises this group (its manager), who answers before the teammates it directs.
     var supervisorId: String? = nil
+    /// The person's own words when the message answers a reply block (BuddyBlocks.typedText): only what they typed, never the options an
+    /// agent wrote. nil for an ordinary message, whose text is all theirs.
+    var authorizedText: String? = nil
     var permissionKeys: [String] { members.map { workspace + ":" + $0.id } }
     var context: String {
         let data = (try? JSONEncoder().encode(members)) ?? Data()
@@ -228,8 +231,8 @@ struct BuddyConversationHistory {
         let history=messages(state,target:target,runId:runId)
         var chunks:[String]=[],count=0,total=0
         for message in history.reversed() {
-            let body=message["body"] as? String ?? "",author=message["who"] as? String=="you" ? "You":"Agent"
-            let chunk=author+": "+body
+            let body=message["body"] as? String ?? "",author=message["who"] as? String=="you" ? "You":"Agent",shown=blocksLine(message["blocks"] as? [[String:Any]] ?? [])
+            let chunk=author+": "+body+(shown.isEmpty ? "":"\n"+shown)
             // What is replayed on every turn is paid for on every turn, and a big Opus history alone can use most of a turn's allowance; older messages stay one tool call away.
             if total+chunk.utf8.count>64000 {break}
             chunks.append(chunk);total+=chunk.utf8.count;count+=1
@@ -237,6 +240,14 @@ struct BuddyConversationHistory {
         let prefix=count<history.count ? "Earlier \(history.count-count) saved messages are outside this prompt. Use buddy_read_chat_history for earlier details; do not guess them.\n\n":""
         let addressed=groupMessages(state,target:target)
         return (addressed.isEmpty ? "":addressed.joined(separator:"\n\n")+"\n\n")+prefix+chunks.reversed().joined(separator:"\n\n")
+    }
+    /// What a reply showed with reply blocks (BuddyBlocks), so a later turn knows which choice or form an answer is for.
+    static func blocksLine(_ blocks:[[String:Any]])->String {
+        let named=blocks.prefix(12).map{block->String in
+            let type=block["type"] as? String ?? "block",id=block["id"] as? String ?? "",title=(block["question"] as? String) ?? (block["title"] as? String) ?? ""
+            return title.isEmpty ? "\(type) \(id)":"\(type) \(id) “\(title)”"
+        }
+        return named.isEmpty ? "":"[Blocks shown: "+named.joined(separator:"; ")+"]"
     }
     /// What the person said to this agent in its groups: the last ten of their messages that @mention it, or that name no member and so speak to
     /// everyone. Something said in the group ("stop waiting for me", "@Chief do X") still holds when they next write to the agent directly.

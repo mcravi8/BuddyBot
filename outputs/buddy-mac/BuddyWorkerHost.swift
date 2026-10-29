@@ -2512,6 +2512,8 @@ import Darwin
         if var record = job["recovery"] as? [String: Any], record["state"] as? String == "pending" { record["state"] = "queued"; starting["recovery"] = record }
         try store.update(id, starting)
         let f = files(job); run.privateFiles = f; run.scope = try f.scope(workspace)
+        // An attempt shows only its own reply blocks; an earlier attempt's were delivered with its result.
+        if job["blocks"] != nil { try? store.update(id, ["blocks": [[String: Any]]()]) }
         if job["kind"] as? String=="coding" {if job["provider"] as? String=="chatgpt" {try executeCodexCoding(job,agent:a,run:run)} else {try executeCoding(job,agent:a,model:claudeModel ?? "claude-sonnet-4-6",run:run)};return}
         let service = ConversationService(support: folder.appendingPathComponent("Conversation"), projectFiles: f, executable: executableOverride, grantsSupport: support); run.service = service
         service.connectionFilter = { [weak self] connection in connection.id != "connector_openai_search_service" || self?.permitted(job, tool: "web") == true }
@@ -2530,7 +2532,7 @@ import Darwin
         // A ChatGPT task is told about web search by its conversation, which knows whether the connector is there; Claude reaches it through Buddy.
         let webSearch = job["provider"] as? String == "claude" && permitted(job, tool: "web") && (try? providerSettings.current(workspace).chatgptEnabled) == true
         let instructions = """
-        \(BuddyRuntimeCapabilities.guidance(provider:job["provider"] as? String ?? "chatgpt",model:claudeModel ?? job["model"] as? String ?? (job["provider"] as? String=="claude" ? "claude-sonnet-4-6":"OpenAI account default"),webSearch:webSearch))
+        \(BuddyRuntimeCapabilities.guidance(provider:job["provider"] as? String ?? "chatgpt",model:claudeModel ?? job["model"] as? String ?? (job["provider"] as? String=="claude" ? "claude-sonnet-4-6":"OpenAI account default"),webSearch:webSearch))\(job["provider"] as? String == "claude" ? "\n" + BuddyBlocks.guidance : "")
         \(BuddyInboxReview.guidance)
         You are \(a["name"] as? String ?? "Buddy"), a background worker in Buddy. \(a["role"] as? String ?? "")
         User configuration: \(a["description"] as? String ?? "")
@@ -2573,7 +2575,7 @@ import Darwin
             p.onEvent = { [weak self, weak run] event in guard let run else { return }; self?.claudeEvent(event, job: job, run: run) }
             try p.launch("claude.mjs")
             let home = folder.appendingPathComponent("Claude", isDirectory: true); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            var tools = Self.tools + [BuddyInboxReview.tool,BuddyInboxReview.finishTool] + ConversationService.directServiceTools
+            var tools = Self.tools + [BuddyInboxReview.tool,BuddyInboxReview.finishTool] + ConversationService.directServiceTools + [BuddyBlocks.tool]
             if permitted(job, tool: "projectFiles") { tools += BuddyProjectFiles.tools }
             try p.send(["command": "start", "runId":runID, "model":claudeModel ?? modelForRun(job,agentID:agentID,workspace:workspace), "apiKey": key, "budget": BuddyRunLimit.bridge(budget, room: ceiling(job, run: run)), "cwd": project(job).path, "home": home.path, "prompt": prompt, "instructions": instructions, "tools": tools])
         } else {
@@ -3113,6 +3115,8 @@ import Darwin
             var values: [String: Any] = [:]
             if let text = event["text"] as? String { values["result"] = String(text.suffix(100000)) }
             if let files = event["files"] { values["files"] = files }
+            // A ChatGPT task's reply blocks (BuddyBlocks), this attempt's own: drawn in the agent's chat with the result.
+            if let blocks = event["blocks"] { values["blocks"] = blocks }
             if let coverage=event["coverage"] as? [[String:Any]],!coverage.isEmpty { values["coverage"]=coverage }
             let status = event["status"] as? String ?? ""
             if ["completed", "failed", "stopped"].contains(status) {
@@ -3202,6 +3206,13 @@ import Darwin
                     let actor=job["agentId"] as! String,asker=self.accessAsker(job)
                     if name=="buddy_copy_into_project" {let (other,named)=try files.copySource(project.workspace,folderId:args["folderId"] as? String,paths:paths,asker:asker);result=try files.copy(from:other,to:project,paths:named,actor:actor,actorName:"Claude worker")}
                     else {let (other,into)=try files.copyTarget(project.workspace,folderId:args["folderId"] as? String,into:args["into"] as? String ?? "",asker:asker);result=try files.copy(from:project,to:other,paths:paths,into:into,replacing:false,actor:actor,actorName:"Claude worker")}
+                }
+                // Reply blocks for the task's result (BuddyBlocks): kept with this attempt and drawn in the agent's chat with the result.
+                else if !coding,name==BuddyBlocks.name {
+                    let place=self.permitted(job,tool:"projectFiles") ? run.privateFiles.flatMap{files in run.scope.map{BuddyBlocks.Place(files:files,scope:$0,actor:job["agentId"] as? String ?? "",actorName:self.agentName(job))}} : nil
+                    let checked=BuddyBlocks.check(args,from:job["agentId"] as? String ?? "",place:place,taken:Set(run.blocks.compactMap{$0["id"] as? String}))
+                    run.blocks+=checked.blocks;try? self.store.update(id,["blocks":run.blocks])
+                    result=BuddyBlocks.modelResult(checked)
                 }
                 else if coding && name != "buddy_checkpoint" && !BuddyProjectFiles.tools.contains(where:{$0["name"] as? String==name}) {throw BuddyWorkerFailure(message:"This tool is unavailable in a coding session.")}
                 else if name.hasPrefix("buddy_browser") || name == "buddy_checkpoint" || name == "buddy_request_decision" || name == "buddy_request_signin" || name == "buddy_review_checkpoint" || name == "buddy_connected_services" || name == "buddy_review_inbox" || name == "buddy_record_inbox_review" || name == "buddy_service_tools" || name == "buddy_service_read" || name == "buddy_team" { result = try await self.tool(name, args, job: job) }
@@ -4007,6 +4018,8 @@ import Darwin
     var reviewWaitingSince: Date?
     /// The last text the coding attempt streamed, so a final result without a summary does not erase what the attempt said.
     var attemptText = ""
+    /// Reply blocks this attempt showed with its result (BuddyBlocks), drawn in the agent's chat with the result.
+    var blocks: [[String: Any]] = []
     /// Whether the model side has said anything yet in this attempt (an allowance is given back if it never did).
     var attemptHeard = false
     /// The most this run may spend of a daily limit (handed to its bridge), set aside while it runs; nil when no limit applies.

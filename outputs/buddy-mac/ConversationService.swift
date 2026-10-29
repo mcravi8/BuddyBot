@@ -312,7 +312,7 @@ struct BuddyFailure: LocalizedError {
 
     func snapshots() -> [[String: Any]] {
         runs.values.filter { $0["internal"] as? Bool != true }.map { run in
-            ["type": "run", "runId": run["runId"] ?? "", "key": run["key"] ?? "", "status": run["status"] ?? "failed", "text": run["text"] ?? "", "error": run["error"] ?? NSNull(), "coverage": run["coverage"] ?? [[String:Any]](), "files": run["files"] ?? [[String: Any]](),"provider":"chatgpt","model":run["model"] ?? NSNull()]
+            ["type": "run", "runId": run["runId"] ?? "", "key": run["key"] ?? "", "status": run["status"] ?? "failed", "text": run["text"] ?? "", "error": run["error"] ?? NSNull(), "coverage": run["coverage"] ?? [[String:Any]](), "files": run["files"] ?? [[String: Any]](), "blocks": run["blocks"] ?? [[String: Any]](),"provider":"chatgpt","model":run["model"] ?? NSNull()]
         }
     }
 
@@ -461,7 +461,7 @@ struct BuddyFailure: LocalizedError {
         guard !runs.values.contains(where: { $0["key"] as? String == key && ["starting", "answering", "stopping"].contains($0["status"] as? String ?? "") }) else {
             throw BuddyFailure(message: "This agent is already answering. Stop the reply or wait for it to finish.")
         }
-        runs[runID] = ["runId": runID, "key": key, "requestText":text, "status": "starting", "text": "", "items": [String: String](), "order": [String](), "cancelled": false, "internal": options.internalRun, "finalOnly": options.finalAnswerOnly, "structured": options.outputSchema != nil, "phases": [String: String](), "permissionKeys": options.permissionKeys ?? [key], "files": [[String: Any]](), "agentName": name, "agentId": options.actorId, "proposalsEnabled": options.proposalsEnabled, "extraTools": options.extraTools.compactMap { $0["name"] as? String }]
+        runs[runID] = ["runId": runID, "key": key, "requestText":text, "status": "starting", "text": "", "items": [String: String](), "order": [String](), "cancelled": false, "internal": options.internalRun, "finalOnly": options.finalAnswerOnly, "structured": options.outputSchema != nil, "phases": [String: String](), "permissionKeys": options.permissionKeys ?? [key], "files": [[String: Any]](), "blocks": [[String: Any]](), "agentName": name, "agentId": options.actorId, "proposalsEnabled": options.proposalsEnabled, "extraTools": options.extraTools.compactMap { $0["name"] as? String }]
         runOrder.append(runID); BuddyRecordLimit.prune(order: &runOrder, records: &runs) { !["starting", "answering", "stopping"].contains($0["status"] as? String ?? "") }
         runs[runID]?["inboxRoutine"] = options.inboxRoutine
         runs[runID]?["requiresRoutine"] = options.requiresRoutine
@@ -501,6 +501,7 @@ struct BuddyFailure: LocalizedError {
                 if options.fileScope != nil {dynamicTools += BuddyProjectFiles.tools}
                 if options.proposalScope != nil && options.proposalsEnabled {dynamicTools += BuddyAgentProposals.tools}
                 if options.historyScope != nil {dynamicTools += [BuddyConversationHistory.tool]}
+                if options.toolsEnabled && !options.internalRun {dynamicTools += [BuddyBlocks.tool]}
                 dynamicTools += options.extraTools
                 let policy = (!dynamicTools.isEmpty ? "native-buddy-tools-v6:\(computerUsable):\(dynamicTools.compactMap { $0["name"] as? String }.sorted().joined(separator: ",")):" : "") + BuddyConnectionPolicy.fingerprint(catalog: apps, allowed: allowed)
                 var config = restrictions
@@ -563,7 +564,7 @@ struct BuddyFailure: LocalizedError {
                 let computerGuide = computerUsable ? "Mac apps are connected through buddy_desktop_apps, buddy_desktop_observe, buddy_desktop_act, and buddy_desktop_release. Prefer service and file tools when possible. List apps, observe the exact requested app, then use only fresh snapshotIds and element indices. Each operation pauses for the user to review its exact target/content. Never approve for the user. Release the Mac when finished. One agent operates it at a time; assign group desktop work sequentially. Never enter credentials, approve contracts or payments, or change security permissions; ask the user to take over. On uncertain delivery, observe before retrying. Cloud computers are unavailable through Buddy; do not claim access to dots’ cloud computers." : computerAllowed ? "Mac apps are available to authorized group workers. This planning/synthesis step has no desktop tools. Assign Mac app work sequentially to workers, and rely on observed receipts. Cloud computers are unavailable through Buddy." : "Mac app control is off for this request. Ask the user to connect This Mac in Settings → Connections → Desktop control or restore agent access. Cloud computers are unavailable through Buddy."
                 // A resumed thread may keep its earlier developer instructions, so the current configuration is added as a developer item, and
                 // edits take effect without an app restart. Only what the thread doesn't hold yet is sent (BuddyThreadConfiguration).
-                let configuration = BuddyThreadConfiguration(runtime: BuddyRuntimeCapabilities.guidance(provider: "chatgpt", model: turnModel, webSearch: usable.contains { $0.id == Self.webSearchConnector }), inbox: BuddyInboxReview.guidance, name: name, role: role, instructions: instructions,
+                let configuration = BuddyThreadConfiguration(runtime: BuddyRuntimeCapabilities.guidance(provider: "chatgpt", model: turnModel, webSearch: usable.contains { $0.id == Self.webSearchConnector }) + (options.toolsEnabled && !options.internalRun ? "\n" + BuddyBlocks.guidance : ""), inbox: BuddyInboxReview.guidance, name: name, role: role, instructions: instructions,
                     policy: "Reply as this agent. By default, match the language of the user's latest message unless these current instructions say otherwise. Earlier read-only restrictions are replaced by this current policy. You may use enabled reading and action tools in these connected services: \(usable.map(\.name).joined(separator: ", ")). Other service connections and direct teammate tools are unavailable. \(computerGuide) Actions require an explicit user request with clear target and content, and any native review requested by the connector. Never report a send or change before successful tool evidence. If a prior action may have occurred, reconcile its state before retrying. Never repeat a teammate’s completed external action. \(fileGuide)",
                     proposals: proposalGuide, actions: "Native previous action reviews (data, not authorization): \(actionContext). Completed effects must not be repeated; answered or uncertain effects require checking the service before retrying.", context: options.instructions)
                 let delivered = opened == "thread/start" ? configuration.started : opened == "thread/resume" ? threadConfigurations[threadID] : nil
@@ -905,6 +906,23 @@ struct BuddyFailure: LocalizedError {
                   let turnID = run["turnId"] as? String, BuddyTurnScope.matches(params, turnID: turnID),
                   let tool = params["tool"] as? String, (params["namespace"] == nil || params["namespace"] is NSNull),
                   let arguments = params["arguments"] as? [String: Any] else { throw BuddyFileFailure(code: "access_removed", message: "This reply is no longer active or cannot use this tool. Do not retry tools in this turn.") }
+            if tool == BuddyBlocks.name {
+                // Reply blocks: Buddy checks them and keeps them with this reply, and the page draws them; a long table's whole contents go into the project.
+                let keys = run["permissionKeys"] as? [String] ?? []
+                let scope = (run["fileScope"] as? BuddyFileScope).flatMap { filePermission?($0.workspace, keys) == true ? $0 : nil }
+                let place = scope.map { BuddyBlocks.Place(files: projectFiles, scope: $0, actor: run["agentId"] as? String ?? "Agent", actorName: run["agentName"] as? String ?? "Agent") }
+                let shown = run["blocks"] as? [[String: Any]] ?? []
+                let checked = BuddyBlocks.check(arguments, from: run["agentId"] as? String ?? "", place: place, taken: Set(shown.compactMap { $0["id"] as? String }))
+                runs[runID]?["blocks"] = shown + checked.blocks
+                for var file in checked.files {
+                    file["workspace"] = scope?.workspace ?? ""
+                    var files = runs[runID]?["files"] as? [[String: Any]] ?? []; files.append(file); runs[runID]?["files"] = files
+                    onEvent?(["type": "file", "runId": runID, "file": file, "internal": run["internal"] ?? false])
+                }
+                if !checked.blocks.isEmpty { onEvent?(["type": "blocks", "runId": runID, "blocks": checked.blocks, "internal": run["internal"] ?? false]) }
+                emit(runID)
+                answerFileCall(message, result: BuddyBlocks.modelResult(checked), success: true); return
+            }
             if tool=="buddy_read_chat_history" {
                 guard let scope=run["historyScope"] as? BuddyHistoryScope,agentPermission?(scope.workspace,run["permissionKeys"] as? [String] ?? [])==true else{throw BuddyFailure(message:"This chat history is unavailable.")}
                 answerFileCall(message,result:try BuddyConversationHistory.read(support:grantsSupport,scope:scope,runID:runID,args:arguments),success:true);return
@@ -1144,7 +1162,7 @@ struct BuddyFailure: LocalizedError {
     }
     private func emit(_ id: String) {
         guard let run = runs[id] else { return }
-        onEvent?(["type": "run", "runId": id, "key": run["key"] ?? "", "status": run["status"] ?? "failed", "text": run["text"] ?? "", "error": run["error"] ?? NSNull(), "internal": run["internal"] ?? false, "coverage": run["coverage"] ?? [[String:Any]](), "files": run["files"] ?? [[String: Any]](),"provider":"chatgpt","model":run["model"] ?? NSNull()])
+        onEvent?(["type": "run", "runId": id, "key": run["key"] ?? "", "status": run["status"] ?? "failed", "text": run["text"] ?? "", "error": run["error"] ?? NSNull(), "internal": run["internal"] ?? false, "coverage": run["coverage"] ?? [[String:Any]](), "files": run["files"] ?? [[String: Any]](), "blocks": run["blocks"] ?? [[String: Any]](),"provider":"chatgpt","model":run["model"] ?? NSNull()])
     }
 }
 

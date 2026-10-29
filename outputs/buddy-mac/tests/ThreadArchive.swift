@@ -1,4 +1,4 @@
-// run-tests: ConversationService.swift BuddyInboxReview.swift BuddyOperationsDB.swift BuddyMailVerification.swift BuddyComputer.swift BuddyTransport.swift BuddyConnections.swift BuddyToolInput.swift BuddyTeam.swift BuddyProjectFiles.swift BuddyDocuments.swift BuddyAgentProposals.swift -- src:tests/thread-archive-server.py
+// run-tests: ConversationService.swift BuddyBlocks.swift BuddyInboxReview.swift BuddyOperationsDB.swift BuddyMailVerification.swift BuddyComputer.swift BuddyTransport.swift BuddyConnections.swift BuddyToolInput.swift BuddyTeam.swift BuddyProjectFiles.swift BuddyDocuments.swift BuddyAgentProposals.swift -- src:tests/thread-archive-server.py
 import Foundation
 
 /// Buddy's ChatGPT work stays out of the person's own ChatGPT/Codex chat list. A background run's thread is ephemeral and never saved; a chat

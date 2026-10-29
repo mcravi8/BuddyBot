@@ -230,6 +230,17 @@ struct BuddyFileReceipt: Codable {
         let (fd,name) = try parent(scope,path); defer { Darwin.close(fd) }
         guard let data = try bytes(fd,name) else { throw failure("file_missing", "This file is missing.") }; return data
     }
+    /// A file a reply block points at (BuddyBlocks), when it is a regular file in a connected folder: its path, folder and size. A path on
+    /// the Mac is never looked up or asked about here; it shows as not found.
+    func blockFile(_ scope: BuddyFileScope, path: String, folderId: String?) -> [String: Any]? {
+        guard !Self.namesMacPath(path) else { return nil }
+        let selected = folderId.map { BuddyFileScope(workspace: scope.workspace, folderId: $0) } ?? scope
+        guard (try? location(selected)) != nil, let (fd, name) = try? parent(selected, path) else { return nil }
+        defer { Darwin.close(fd) }
+        var info = stat()
+        guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        return ["path": path, "folderId": selected.folderId, "bytes": Int(info.st_size)]
+    }
     func document(_ scope: BuddyFileScope, path: String, expectedVersion: String, specification: [String:Any]?, operations: [[String:Any]]?, actor: String, actorName: String) throws -> [String:Any] {
         let data: Data
         if let specification {

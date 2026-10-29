@@ -18,6 +18,8 @@ import Foundation
         var entries: [[String: Any]] = []
         var children = Set<String>()
         var files: [[String: Any]] = []
+        /// Reply blocks the members showed (BuddyBlocks), in the order they came; ids stay unique across members.
+        var blocks: [[String: Any]] = []
         var replyTools: [[String: Any]] = []
         init(_ request: BuddyTeamRequest) { self.request = request }
     }
@@ -222,7 +224,7 @@ import Foundation
         options.fileContext = job.request.fileScope
         if tools { options.fileScope = job.request.fileScope }
         let around = groupContext?(job.request.workspace, job.request.groupId, agent.id == "coordinator" ? nil : agent.id) ?? ""
-        options.instructions = instructions+"\n"+(agentInstructions?(job.request.workspace,agent.id) ?? "")+(around.isEmpty ? "" : "\n"+around); options.extraTools=tools ? extraTools:[]; options.authorizedUserText=job.request.text; options.outputSchema = schema; options.internalRun = true; options.finalAnswerOnly = true
+        options.instructions = instructions+"\n"+(agentInstructions?(job.request.workspace,agent.id) ?? "")+(around.isEmpty ? "" : "\n"+around); options.extraTools=tools ? extraTools:[]; options.authorizedUserText=job.request.authorizedText ?? job.request.text; options.outputSchema = schema; options.internalRun = true; options.finalAnswerOnly = true
         return try await withCheckedThrowingContinuation { continuation in
             children[childId] = Child(parent: job.request.runId, entry: entry, finalReply: finalReply, continuation: continuation)
             job.children.insert(childId); started[childId] = Date()
@@ -266,6 +268,14 @@ import Foundation
         // Activity: a tool finishing, or the run reporting progress, starts the quiet wait over. A run's final status ends it below instead.
         if type == "tool" || type == "run" && !["completed", "failed", "stopped"].contains(status) { armDeadline(id) }
         if type == "file", busy(job.status), !job.cancelled, let file = event["file"] as? [String: Any] { job.files.append(file); emit(job) }
+        if type == "blocks", busy(job.status), !job.cancelled, let blocks = event["blocks"] as? [[String: Any]] {
+            for var block in blocks {
+                let taken = Set(job.blocks.compactMap { $0["id"] as? String }), id = block["id"] as? String ?? "block"
+                if taken.contains(id) { var n = 2; while taken.contains("\(id)-\(n)") { n += 1 }; block["id"] = "\(id)-\(n)" }
+                job.blocks.append(block)
+            }
+            emit(job)
+        }
         if type == "tool", child.finalReply, busy(job.status), job.replyTools.count < 30 { job.replyTools.append(["name": event["tool"] ?? "Reading tool", "status": status, "category": event["category"] ?? "connections"]); emit(job) }
         if type == "tool", let entry = child.entry, let index = job.entries.firstIndex(where: { $0["agentId"] as? String == entry }), busy(job.status) {
             var tools = job.entries[index]["tools"] as? [[String: Any]] ?? []
@@ -297,7 +307,7 @@ import Foundation
         job.entries[index]["error"] = error
     }
     private func snapshot(_ job: Job) -> [String: Any] {
-        ["type": "run", "runId": job.request.runId, "key": job.request.key, "status": job.status, "text": job.text, "error": job.error, "files": job.files,
+        ["type": "run", "runId": job.request.runId, "key": job.request.key, "status": job.status, "text": job.text, "error": job.error, "files": job.files, "blocks": job.blocks,
          "team": ["phase": job.phase, "leadId": job.leadId, "direct": job.direct, "memberIds": job.request.members.map(\.id), "entries": job.entries, "replyTools": job.replyTools, "partial": job.entries.contains { ["failed", "blocked"].contains($0["status"] as? String ?? "") }]]
     }
     private func emit(_ job: Job) { onEvent?(snapshot(job)) }

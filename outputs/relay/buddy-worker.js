@@ -246,7 +246,7 @@
     state.messages[t.agentId]||=[];const id=deliveryID(t);if(state.messages[t.agentId].some(m=>m.id===id))return false;
     const body=taskMessage(t);
     if(!body)return false;
-    const message={id,who:t.agentId,body,time:new Date(t.updatedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),live:true,status:'completed',workerTaskID:t.id,workerStatus:t.status,workerAttempt:Number(t.attempt)||0,workerUpdatedAt:t.updatedAt,coverage:t.coverage||[],files:t.files||[],workerReviewIds:t.status==='waiting_review'&&Array.isArray(t.reviews)?pending(t).map(r=>r.id):undefined};
+    const message={id,who:t.agentId,body,time:new Date(t.updatedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),live:true,status:'completed',workerTaskID:t.id,workerStatus:t.status,workerAttempt:Number(t.attempt)||0,workerUpdatedAt:t.updatedAt,coverage:t.coverage||[],files:t.files||[],blocks:Array.isArray(t.blocks)?t.blocks.filter(b=>b&&typeof b==='object'&&typeof b.type==='string'&&typeof b.id==='string').slice(0,24):[],workerReviewIds:t.status==='waiting_review'&&Array.isArray(t.reviews)?pending(t).map(r=>r.id):undefined};
     // A message that already records an answer is never reused: it stays as that answer, and what comes next is a message of its own.
     const prior=attention(t.status)?state.messages[t.agentId].find(m=>m.workerTaskID===t.id&&attention(m.workerStatus)&&!m.workerDecision&&(m.workerAttempt===message.workerAttempt||m.id.startsWith(`worker-${t.id}-${message.workerAttempt}-`))):null;
     if(prior){if(prior.workerUpdatedAt&&prior.workerUpdatedAt>t.updatedAt)return false;Object.assign(prior,message);}else state.messages[t.agentId].push(message);return true;

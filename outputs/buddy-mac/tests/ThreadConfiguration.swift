@@ -1,4 +1,4 @@
-// run-tests: ConversationService.swift BuddyInboxReview.swift BuddyOperationsDB.swift BuddyMailVerification.swift BuddyComputer.swift BuddyTransport.swift BuddyConnections.swift BuddyToolInput.swift BuddyTeam.swift BuddyProjectFiles.swift BuddyDocuments.swift BuddyAgentProposals.swift -- src:tests/thread-configuration-server.py
+// run-tests: ConversationService.swift BuddyBlocks.swift BuddyInboxReview.swift BuddyOperationsDB.swift BuddyMailVerification.swift BuddyComputer.swift BuddyTransport.swift BuddyConnections.swift BuddyToolInput.swift BuddyTeam.swift BuddyProjectFiles.swift BuddyDocuments.swift BuddyAgentProposals.swift -- src:tests/thread-configuration-server.py
 import Foundation
 
 /// The fixed text Buddy sends with every ChatGPT call. A thread keeps every developer item it is given, so the agent's configuration reaches it

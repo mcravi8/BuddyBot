@@ -8,7 +8,9 @@
   }
   function active(state,target){ return Object.values(state.runs||{}).find(r=>r.target===target&&busy(r.status)); }
   // `text`: a message Buddy sends for the person after their click (a folder they allowed, buddy-folder-access.js); the draft stays theirs.
-  function begin(state,target,{retryOf,runId=uid(),userId=uid(),replyId=uid(),time=new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),text:given}={}){
+  // `answer` is a reply block's answer (buddy-blocks.js): the chat shows its words, the agent gets `text`, and only what the person typed
+  // (answer.typed) counts as their own words; a retry sends it the same way.
+  function begin(state,target,{retryOf,runId=uid(),userId=uid(),replyId=uid(),time=new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),text:given,answer}={}){
     migrate(state);
     if(active(state,target))throw Error('This chat is already answering.');
     const agent=state.agents.find(a=>a.id===target);
@@ -23,14 +25,17 @@
     if(text.length>30000)throw Error('Keep messages under 30,000 characters.');
     if(!retryOf&&given===undefined&&state.attachments[target]?.length)throw Error('Remove the attachment, then choose a shared file from the folder button in the Mac app.');
     state.messages[target] ||= [];
+    const reply=answer?{block:String(answer.block||''),typed:String(answer.typed||'')}:previous?.answer;
     if(previous)userId=previous.userId;
-    else state.messages[target].push({id:userId,who:'you',body:text,time,createdAt:new Date().toISOString(),live:true});
+    else state.messages[target].push({id:userId,who:'you',body:answer?String(answer.body||text):text,time,createdAt:new Date().toISOString(),live:true,...(answer?{answer:{block:String(answer.block||''),question:String(answer.question||''),text:String(answer.text||'')}}:{})});
     const team=group?{phase:'planning',leadId:'',entries:[],memberIds:[...group.members],partial:false}:undefined;
     state.messages[target].push({id:replyId,who:target,body:'',time,live:true,runId,status:'starting',...(team?{team}: {})});
-    const run={runId,target,key:`${state.conversationWorkspace}:${target}`,userId,replyId,text,createdAt:new Date().toISOString(),status:'starting',...(team?{team,memberIds:[...group.members]}: {})};
+    const run={runId,target,key:`${state.conversationWorkspace}:${target}`,userId,replyId,text,createdAt:new Date().toISOString(),status:'starting',...(team?{team,memberIds:[...group.members]}: {}),...(reply?{answer:reply}:{})};
     state.runs[runId]=run;
     if(!previous&&given===undefined)state.drafts[target]='';
-    return {run,payload:group?{kind:'group',runId,key:run.key,text,groupId:target}:{runId,key:run.key,text,agentId:target,agent:{name:agent.name,role:agent.role,description:agent.description}}};
+    const payload=group?{kind:'group',runId,key:run.key,text,groupId:target}:{runId,key:run.key,text,agentId:target,agent:{name:agent.name,role:agent.role,description:agent.description}};
+    if(reply)payload.answer={...reply};
+    return {run,payload};
   }
   // A group request that agents answered for themselves has no reply of its own to show: their messages are the reply. (The run keeps them joined
   // in `body`, which history and search read.) What can still belong to the reply bubble is shown, and a failure keeps its retry.
@@ -54,7 +59,7 @@
       const team=state.runs?.[message.runId]?.team||message.team;
       if(team.partial)return {body:'Some of the work couldn’t finish. You can retry the request.'};
       const cards=typeof window!=='undefined'&&window.BuddyActions?.cards?String(window.BuddyActions.cards(message.runId)||''):'';
-      return message.files?.length||message.proposalIds?.length||message.teamPlanIds?.length||message.routines?.length||message.tasks?.length||message.coverage?.length||cards?{body:'Saved from this request:'}:{hidden:true};
+      return message.files?.length||message.blocks?.length||message.proposalIds?.length||message.teamPlanIds?.length||message.routines?.length||message.tasks?.length||message.coverage?.length||cards?{body:'Saved from this request:'}:{hidden:true};
     }
     const run=state.runs?.[message.runId];let body=String(message.body||''),rest='';
     if(!body||message.setup||run&&/\b(?:explain|details|detail|why|breakdown|report|full|thorough)\b/i.test(run.text||''))return {body};
@@ -107,20 +112,22 @@
     }
     const message=(state.messages[run.target]||[]).find(m=>m.id===run.replyId);
     const body=typeof event.text==='string'?event.text:message?.body||'';
-    const empty=event.status==='completed'&&!body.trim()&&!(event.files?.length||message?.files?.length||message?.proposalIds?.length||message?.teamPlanIds?.length||message?.routines?.length||message?.tasks?.length);
+    const empty=event.status==='completed'&&!body.trim()&&!(event.files?.length||message?.files?.length||event.blocks?.length||message?.blocks?.length||message?.proposalIds?.length||message?.teamPlanIds?.length||message?.routines?.length||message?.tasks?.length);
     const status=empty?'failed':event.status,error=empty?'No answer came back. Try again.':event.error||'';
     run.status=status;run.error=error;run.updatedAt=new Date().toISOString();
     if(team)run.team=team;
     if(Array.isArray(event.files))run.files=structuredClone(event.files.filter(f=>f&&typeof f.path==='string'&&typeof f.folderId==='string'&&typeof f.revision==='string').slice(0,180));
+    // Reply blocks the Mac app checked (BuddyBlocks.swift); buddy-blocks.js draws them.
+    if(Array.isArray(event.blocks))run.blocks=structuredClone(event.blocks.filter(b=>b&&typeof b==='object'&&typeof b.type==='string'&&typeof b.id==='string').slice(0,24));
     if(typeof event.provider==='string')run.provider=event.provider;if(typeof event.model==='string')run.model=event.model;
     if(Array.isArray(event.coverage))run.coverage=structuredClone(event.coverage.filter(c=>c&&typeof c.id==='string'&&typeof c.query==='string'&&typeof c.partial==='boolean'&&Number.isInteger(c.read)&&Number.isInteger(c.unread)).slice(-10));
-    if(message){if(run.provider)message.provider=run.provider;if(run.model)message.model=run.model;if(run.coverage)message.coverage=structuredClone(run.coverage);message.status=status;if(typeof event.text==='string')message.body=event.text;message.error=error;if(run.team)message.team=structuredClone(run.team);if(run.files)message.files=structuredClone(run.files);}
+    if(message){if(run.provider)message.provider=run.provider;if(run.model)message.model=run.model;if(run.coverage)message.coverage=structuredClone(run.coverage);message.status=status;if(typeof event.text==='string')message.body=event.text;message.error=error;if(run.team)message.team=structuredClone(run.team);if(run.files)message.files=structuredClone(run.files);if(run.blocks)message.blocks=structuredClone(run.blocks);}
     return true;
   }
   function recover(state,snapshots=[]){
     for(const run of Object.values(state.runs||{})){
       const message=(state.messages[run.target]||[]).find(m=>m.id===run.replyId);
-      if(run.status==='completed'&&message&&!message.body?.trim()&&!message.files?.length&&!message.proposalIds?.length&&!message.teamPlanIds?.length){
+      if(run.status==='completed'&&message&&!message.body?.trim()&&!message.files?.length&&!message.blocks?.length&&!message.proposalIds?.length&&!message.teamPlanIds?.length){
         run.status=message.status='failed';run.error=message.error='This reply finished without an answer. Try again.';
       }
       if(!busy(run.status))continue;

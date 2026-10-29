@@ -514,3 +514,17 @@ On 23 Oct Forge stopped a ten-hour local simulation (S02c C1: 800 independent re
 
 Tests: `tests/ServiceLeases.swift` runs all of it through the real worker against a RunPod-shaped stand-in on 127.0.0.1 (`tests/service-api-server.py`), a stand-in ssh that runs the "machine" in a folder (`tests/service-ssh.py`) and stand-in Claude, Codex and supervisor sessions; under `run-tests.py` (`BUDDY_TEST_LOOPBACK_ONLY=1`) no service address but this Mac's loopback is accepted.
 
+
+## Reply blocks
+
+An agent can show its work as well as describe it (29 Oct, proposal "Buddy Reply Blocks"). With `buddy_show` a reply carries up to six blocks per call: **Show** blocks (a table, a bar or line chart, key numbers, a comparison of two to four options with the agent's pick, a timeline, files in connected folders) and **Ask** blocks (a choice, a form of up to eight fields, a checklist). The agent describes each block in JSON; the page draws it with its own code (`relay/buddy-blocks.js`, `relay/buddy-blocks.css`), so an agent never writes HTML, and every string is drawn as text.
+
+**The check (`BuddyBlocks.swift`).** Buddy fixes what it can by itself and tells the agent only what it couldn't show: a table over 200 rows shows 200 and is saved whole as an Excel file in `Buddy tables/` in the project; a column kind it doesn't know is text; numbers written as text ("1,000", "12.5%") are read as numbers; a file that isn't in a connected folder shows as not found (a path elsewhere on the Mac is never looked up or asked about); a form field that asks for a password, code, card number or key is removed, with a note pointing to the sign-in tools. Block ids stay unique within a reply, and in a group across its members.
+
+**Where it works.** Every visible chat turn on ChatGPT and Claude, a group's reply (its members' blocks collect on it), and a background task's result on either provider (an attempt shows only its own blocks). The runtime facts carry one paragraph on when a block helps.
+
+**Answers.** An Ask block is answered once. The chat shows the answer as the person's message ("Answer to “…”: …"), the block locks and says what was answered, and the agent gets a plain line plus the values as JSON. Only what the person typed counts as their own words for anything that checks what they said (stage authorization, routines, standing rules): the options and labels are the agent's (`BuddyBlocks.typedText`, `BuddyTeamRequest.authorizedText`). An answer is never an approval; sending, spending, signing up and the rest still go through Buddy's approval. A retried answer is still an answer. The next turn's history names the blocks a reply showed.
+
+**Answer buttons.** In blocks and in Buddy's existing cards (decision, folder access, sign-in, approval choices), the answer buttons sit at the bottom right, the main one rightmost.
+
+Tests: `tests/Blocks.swift` (every fix and refusal, the saved workbook, typed words, history), `relay/buddy-blocks.test.js` (text-only drawing, formats, answers, BuddyChat), `buddy-worker/test/blocks-ui.test.mjs` (all nine blocks in light, dark and at phone width with nothing touching, answering a choice and a form, the existing cards' buttons).

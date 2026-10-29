@@ -12,7 +12,8 @@
 .signin-field input{width:100%;box-sizing:border-box;font:inherit;font-size:13px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--text);padding:9px 11px}
 .signin-field input:focus{outline:2px solid color-mix(in srgb,var(--ink) 35%,transparent);outline-offset:1px}
 .signin-holder .primary-button{padding:9px 14px}
-.signin-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}
+/* Answer buttons sit at the bottom right with the main one rightmost (29 Oct, with reply blocks); the order in the page is unchanged. */
+.signin-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;flex-direction:row-reverse}
 .signin-actions .border-button{display:inline-flex;font-size:12px;padding:8px 11px}
 .signin-message.signin-ended .signin-bubble{border-color:transparent}
 .signin-message.signin-ended .signin-title{font-weight:500;color:var(--text2)}
