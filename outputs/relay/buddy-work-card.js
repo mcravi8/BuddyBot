@@ -100,7 +100,8 @@
     const popHTML=steps.length||result?`<div class="wc-pop" role="tooltip" id="${pop}">${steps.length?`<p class="wc-pop-title">${esc(name)}’s steps</p><ol>${steps.map(s=>`<li><time>${esc(clock(s.at))}</time><span>${esc(short(s.text,200))}</span></li>`).join('')}</ol>`:''}${result?`<p class="wc-pop-title">Result</p><p class="wc-pop-result">${esc(short(result,400))}</p>`:''}</div>`:'';
     const title=popHTML?`<button type="button" class="wc-task" data-work-step="${esc(t.id)}" aria-expanded="${pinned}" aria-describedby="${pop}">${esc(t.title)}</button>`:`<span class="wc-task">${esc(t.title)}</span>`;
     const d=(Array.isArray(stage.decisions)?stage.decisions:[]).filter(x=>x?.taskId===t.id).at(-1);
-    return `<li class="wc-row ${dot}${pinned?' pinned':''}" data-task="${esc(t.id)}"><span class="wc-dot" aria-hidden="true"></span><div class="wc-main">${title}<span class="sr-only">, ${esc(chip.label)}</span>${d?decisionLine(d,t,ctx):''}</div><span class="wc-who">${esc(name)}${when?` · ${esc(when)}`:''}${avatarOf(ctx,t.assignee)}</span>${popHTML}</li>`;
+    const code=job?.kind==='coding'&&job.code?.fileCount?`<p class="wc-code">${Number(job.code.fileCount)} ${Number(job.code.fileCount)===1?'file':'files'}, ${Number(job.code.added)||0} lines added · <button type="button" class="wc-link" data-chat-view="code">Open in Code</button></p>`:'';
+    return `<li class="wc-row ${dot}${pinned?' pinned':''}" data-task="${esc(t.id)}"><span class="wc-dot" aria-hidden="true"></span><div class="wc-main">${title}<span class="sr-only">, ${esc(chip.label)}</span>${d?decisionLine(d,t,ctx):''}${code}</div><span class="wc-who">${esc(name)}${when?` · ${esc(when)}`:''}${avatarOf(ctx,t.assignee)}</span>${popHTML}</li>`;
   }
   // What is happening now, in one line, while the stage is planned, worked on or checked.
   function liveLine(stage,state,ctx){
@@ -156,6 +157,8 @@
   // A background task an agent started from its own chat: its steps as rows, the newest live while it works, and the way to the whole task.
   const TASK={queued:['Queued','ready'],starting:['Working','working'],running:['Working','working'],stopping:['Stopping','working'],waiting_user:['Needs you','needs'],waiting_review:['Needs you','needs'],paused:['Paused','idle'],failed:['Didn’t finish','needs'],interrupted:['Didn’t finish','needs'],completed:['Done','done'],cancelled:['Cancelled','idle']};
   function taskCard(receipt,job,ctx={}){
+    // A coding task with saved steps is drawn by the Code view (buddy-code.js): its lane graph, clashes, checks and the way in.
+    if(job?.kind==='coding'&&job.code&&root.BuddyCode)return root.BuddyCode.card(receipt,job,{...root.BuddyCode.context?.(),names:ctx.names||root.BuddyCode.context?.().names});
     const [label,tone]=TASK[job?.status]||['Waiting','idle'],id=String(receipt?.id||job?.id||'');
     const steps=(Array.isArray(job?.trail)?job.trail:[]).filter(s=>String(s?.text||'').trim()).slice(-8);
     const last=tone==='working'?'working':tone==='needs'?'needs':'done';
@@ -178,7 +181,7 @@
       parts.push([p.id,p.status,p.run?.state,p.run?.working,stagesOf(p).map(s=>[s.id,s.status,(s.decisions||[]).length,tasksOf(s).map(t=>{
         if(t.status==='dispatched')working=true;
         const job=typeof jobs==='function'?jobs(t.workerTaskId):null;
-        return [t.id,t.status,t.blockedOn,t.workerStatus,t.updatedAt,job?.progress||'',(job?.trail||[]).length];
+        return [t.id,t.status,t.blockedOn,t.workerStatus,t.updatedAt,job?.progress||'',(job?.trail||[]).length,job?.code?.updatedAt||''];
       })]),noticesOf(p).map(n=>[n.id,n.status])]);
     }
     return JSON.stringify([parts,working?Math.floor(Date.now()/60000):0]);
@@ -200,7 +203,7 @@
   api.jobs=jobs;
   // A reply's background tasks are cards; the plain receipt stays for a task Buddy no longer has. What each card showed is kept, so a
   // status reply that brings a new step or state draws the chat again.
-  const worker=root.BuddyWorkerUI,shown=new Map(),look=job=>job?JSON.stringify([job.status,job.progress||'',(job.trail||[]).length]):'';
+  const worker=root.BuddyWorkerUI,shown=new Map(),look=job=>job?JSON.stringify([job.status,job.progress||'',(job.trail||[]).length,job.code?.updatedAt||'']):'';
   if(worker&&typeof worker.taskReceipts==='function'){
     const receipts=worker.taskReceipts;
     worker.taskReceipts=tasks=>{

@@ -162,6 +162,28 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         require(try Data(contentsOf:support.appendingPathComponent("Worker/Tasks/"+copyID+"/Files/data/prices.csv"))==dataset,"a connected folder's file reaches the coding project byte for byte without passing through the model")
         require((copied["commands"] as? [[String:Any]])?.first?["output"] as? String=="2500000\n","a command in the project reads the copied file")
         require(try Data(contentsOf:copySource.appendingPathComponent("results/data/prices.csv"))==dataset,"a result saved from the project reaches the connected folder byte for byte")
+        // The Code view's records: the copy is Buddy's first step, the command's change is the agent's step with its note, and at the end the
+        // copy is compared with the connected folder. The history lives beside the project, never in it.
+        let code=copied["code"] as? [String:Any] ?? [:],steps=code["steps"] as? [[String:Any]] ?? []
+        require(steps.last?["kind"] as? String=="copy" && steps.last?["message"] as? String=="Copied 1 file from Copy source" && steps.contains{($0["message"] as? String ?? "").hasPrefix("Changes from `node -e") && $0["author"] as? String==agent},"the history: the copy, then what the command changed, by the agent: \(steps.map{$0["message"] ?? ""})")
+        require((code["files"] as? [[String:Any]] ?? []).contains{$0["path"] as? String=="summary.txt" && $0["status"] as? String=="new" && $0["note"] as? String=="The total of the prices file"},"the new file with the agent's note: \(code["files"] ?? "")")
+        require(FileManager.default.fileExists(atPath:support.appendingPathComponent("Worker/Tasks/"+copyID+"/History.git/HEAD").path) && !FileManager.default.fileExists(atPath:support.appendingPathComponent("Worker/Tasks/"+copyID+"/Files/.git").path),"the history is beside the project, not in it")
+        let compared=code["compare"] as? [String:Any] ?? [:]
+        require(compared["ready"] as? Bool==true && (compared["bring"] as? [[String:Any]] ?? []).map{"\($0["path"] ?? "")/\($0["how"] ?? "")"}==["summary.txt/new"],"compared at the end: only the new file would come in: \(compared)")
+        require(code["folderName"] as? String=="Copy source","the folder it came from, by name")
+        func person(_ arguments:[String:Any],actor:String?=nil) async throws -> [String:Any] {
+            try await BuddyWorkerClient.call(support:support,payload:["workspace":workspace,"operation":"code","arguments":arguments].merging(actor.map{["actorId":$0]} ?? [:]){a,_ in a})
+        }
+        let diff=try await person(["action":"diff","taskId":copyID,"path":"summary.txt"])["diff"] as? [String:Any] ?? [:]
+        require((diff["rows"] as? [[String:Any]] ?? []).contains{$0["kind"] as? String=="add" && $0["text"] as? String=="2500000"},"one file's change, read on request: \(diff)")
+        let refused=try? await person(["action":"bring","taskId":copyID],actor:agent)
+        require(refused?["error"] != nil || refused == nil,"an agent cannot bring work into the person's folder: \(refused ?? [:])")
+        require(!FileManager.default.fileExists(atPath:copySource.appendingPathComponent("summary.txt").path),"nothing came in on the agent's request")
+        let brought=try await person(["action":"bring","taskId":copyID])
+        require(try String(contentsOf:copySource.appendingPathComponent("summary.txt"),encoding:.utf8)=="2500000\n" && (brought["broughtIn"] as? [String:Any])?["files"] as? [String]==["summary.txt"],"on the person's tap the new file comes into their folder: \(brought)")
+        let afterBring=(brought["task"] as? [String:Any])?["code"] as? [String:Any] ?? [:]
+        require(((afterBring["steps"] as? [[String:Any]])?.first?["kind"] as? String)=="in" && ((afterBring["compare"] as? [String:Any])?["bring"] as? [[String:Any]] ?? []).isEmpty,"bringing in is the person's step, and nothing is left to bring: \(afterBring["compare"] ?? "")")
+        print("PASS: a coding task's history starts with the copy, keeps its agent's steps and notes, is compared with the connected folder when the attempt ends, shows a file's change on request, and brings work in only on the person's tap")
         // Chatting with an agent renames it, teaches it preferences and bumps its revisions; none of that is a reason to stop what it is doing.
         let slow=try await call(["action":"start","title":"Slow fixture","goal":"SLOW_FIXTURE"],requestID:"slow")["task"] as! [String:Any],slowID=slow["id"] as! String
         for _ in 0..<100 {if (try await call(["action":"status","taskId":slowID])["task"] as! [String:Any])["status"] as? String=="running" {break};try await Task.sleep(nanoseconds:50_000_000)}

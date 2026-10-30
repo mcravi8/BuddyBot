@@ -97,9 +97,12 @@ for line in sys.stdin:
         elif value['id']=='copy':
             assert 'error' not in result,result
             assert [c['path'] for c in result['copied']]==['data/prices.csv'] and [f['path'] for f in result['failed']]==['missing.csv'],result
-            emit({'type':'call','id':'copycmd','tool':'buddy_coding_command','arguments':{'code':'node -e \'console.log(require("fs").statSync("data/prices.csv").size)\''}})
+            emit({'type':'call','id':'copycmd','tool':'buddy_coding_command','arguments':{'code':'node -e \'require("fs").writeFileSync("summary.txt","2500000\\n");console.log(require("fs").statSync("data/prices.csv").size)\''}})
         elif value['id']=='copycmd':
             assert result['exitCode']==0,result
+            emit({'type':'call','id':'step','tool':'buddy_save_step','arguments':{'message':'Summed the prices','files':{'summary.txt':'The total of the prices file'}}})
+        elif value['id']=='step':
+            assert 'error' not in result and result.get('saved') is False,result
             emit({'type':'call','id':'out','tool':'buddy_copy_out_of_project','arguments':{'folderId':re.search(r'COPY_FIXTURE ([0-9A-Fa-f-]{36})',config['prompt']).group(1),'paths':['data/'],'into':'results'}})
         elif value['id']=='out':
             assert 'error' not in result and [c['to'] for c in result['copied']]==['results/data/prices.csv'] and not result['failed'],result

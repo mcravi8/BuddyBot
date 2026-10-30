@@ -8,15 +8,15 @@
   const isProject=f=>!!f&&typeof f==='object'&&typeof f.folderId==='string'&&!!f.folderId&&Array.isArray(f.files)&&(f.managed!==true||f.files.length>0||Array.isArray(f.directories)&&f.directories.length>0);
   // The views a chat offers, in order, and the one shown: the choice while it is still offered, else the chat. With nothing beside the chat
   // there is no choice to show.
-  function views({plan=false,files=false,chosen='chat'}={}){
-    const list=['chat',...(plan?['plan']:[]),...(files?['files']:[])];
+  function views({plan=false,files=false,code=false,chosen='chat'}={}){
+    const list=['chat',...(plan?['plan']:[]),...(files?['files']:[]),...(code?['code']:[])];
     return {list:list.length>1?list:[],shown:list.includes(chosen)?chosen:'chat'};
   }
   const api={isProject,views,docked:()=>false,reveal(){},lost(){},show(){}};root.BuddyProjectDock=api;if(typeof module!=='undefined')module.exports=api;
   if(typeof document==='undefined')return;
 
   let folder=null,folderKey='',target=null,loads=0,loading='',loadedAt=0,detailsOpen=false;
-  const chosen=new Map(),scrolls={plan:0,files:0};
+  const chosen=new Map(),scrolls={plan:0,files:0,code:0};
   // Arriving at a chat shows its latest messages: opened from anywhere else it shows its messages (not the view it showed last), and back from
   // its Plan or Files view the list is at the bottom, already there as it slides in (the person asked to land at the latest messages from
   // anywhere). Opening and redraws are buddy-chat-open.js's. `landed` is the chat and view last shown, null on another page.
@@ -28,8 +28,10 @@
   const chatView=()=>typeof ui!=='undefined'&&ui.view?.kind==='chat'&&!!conversation();
   const plan=()=>chatView()&&root.BuddyPlan?.active?root.BuddyPlan.active():null;
   const hasFiles=()=>native()&&folderKey===key()&&isProject(folder);
-  const layout=()=>views({plan:!!plan(),files:hasFiles(),chosen:chosen.get(ui.view?.target)||'chat'});
-  const LABEL={chat:'Chat',plan:'Plan',files:'Files'};
+  // The Code view: the chat's agents' coding copies (buddy-code.js), offered once one has saved a step.
+  const codeJobs=()=>chatView()&&root.BuddyCode?.forChat?root.BuddyCode.forChat():[];
+  const layout=()=>views({plan:!!plan(),files:hasFiles(),code:codeJobs().length>0,chosen:chosen.get(ui.view?.target)||'chat'});
+  const LABEL={chat:'Chat',plan:'Plan',files:'Files',code:'Code'};
 
   // The tabs, with the selector that sits under the chosen one and glides to the next (buddy-project-dock.css). The same tabs stay on the
   // page while the chat does; only what is chosen changes.
@@ -45,8 +47,8 @@
   // The plan view holds the plan strip, open (BuddyPlan puts it in its slot); the files view holds the folder, as the Files drawer shows it.
   // Both stay on the page while the chat does, hidden when not shown, so moving between the views never draws them again.
   function paneHTML(view){
-    const head=view==='files'?`<h2 class="chat-pane-title">${esc(folder?.name||'Files')}</h2>`:'';
-    return `<section class="chat-pane" id="chat-pane-${view}" data-chat-pane="${view}" role="tabpanel" aria-labelledby="chat-view-tab-${view}" tabindex="-1" hidden${view==='files'?' data-project-dock':''}><div class="chat-pane-inner">${head}${view==='plan'?'<div class="project-dock-plan" data-project-plan-slot></div>':'<div class="project-dock-body" data-project-dock-body></div>'}</div></section>`;
+    const head=view==='files'?`<h2 class="chat-pane-title">${esc(folder?.name||'Files')}</h2>`:view==='code'?'<h2 class="chat-pane-title">Code</h2>':'';
+    return `<section class="chat-pane" id="chat-pane-${view}" data-chat-pane="${view}" role="tabpanel" aria-labelledby="chat-view-tab-${view}" tabindex="-1" hidden${view==='files'?' data-project-dock':''}><div class="chat-pane-inner">${head}${view==='plan'?'<div class="project-dock-plan" data-project-plan-slot></div>':view==='code'?'<div class="code-body" data-code-body></div>':'<div class="project-dock-body" data-project-dock-body></div>'}</div></section>`;
   }
   function restore(pane){
     const details=pane.querySelector('[data-project-dock-body] .project-folder-details');
@@ -54,7 +56,7 @@
   }
   // Moving between views slides them in the tabs' order, Chat · Plan · Files: to the right of where you are, the view you leave goes out to
   // the left and the new one comes in from the right; to the left, the other way. Only the two views involved move, side by side.
-  const ORDER=['chat','plan','files'],DURATION=420,EASE='cubic-bezier(.32,.72,0,1)';
+  const ORDER=['chat','plan','files','code'],DURATION=420,EASE='cubic-bezier(.32,.72,0,1)';
   const calm=()=>typeof matchMedia==='function'&&matchMedia('(prefers-reduced-motion: reduce)').matches;
   let sliding=null;
   const partsOf=(convo,view)=>view==='chat'?[...convo.querySelectorAll(':scope > .chat-body, :scope > .composer-wrap')]:[convo.querySelector(`:scope > [data-chat-pane="${view}"]`)].filter(Boolean);
@@ -95,7 +97,7 @@
       for(const tab of nav.querySelectorAll('[data-chat-view]')){const on=tab.dataset.chatView===shown;tab.setAttribute('aria-selected',String(on));tab.tabIndex=on?0:-1;}
       placeThumb(nav,shown,fresh||calm());
     }
-    for(const view of ['plan','files']){
+    for(const view of ['plan','files','code']){
       let pane=convo.querySelector(`:scope > [data-chat-pane="${view}"]`);
       if(!list.includes(view)){pane?.remove();continue;}
       if(!pane){convo.querySelector(':scope > .composer-wrap')?.insertAdjacentHTML('afterend',paneHTML(view));pane=convo.querySelector(`:scope > [data-chat-pane="${view}"]`);pane&&(pane.scrollTop=scrolls[view]);}
@@ -103,6 +105,10 @@
         const title=pane.querySelector('.chat-pane-title');if(title&&title.textContent!==(folder?.name||'Files'))title.textContent=folder?.name||'Files';
         const body=pane.querySelector('[data-project-dock-body]'),inner=BuddyFiles.body(folder);
         if(body&&body._html!==inner){body.innerHTML=inner;body._html=inner;restore(pane);}
+      }
+      if(view==='code'&&pane){
+        const body=pane.querySelector('[data-code-body]'),inner=root.BuddyCode.tab(codeJobs(),root.BuddyCode.context());
+        if(body&&body._html!==inner){body.innerHTML=inner;body._html=inner;}
       }
     }
     // The chat's own messages and composer stay in the page while another view is shown, so nothing typed or streaming is lost.
