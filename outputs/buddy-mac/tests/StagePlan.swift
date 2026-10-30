@@ -132,6 +132,9 @@ import Foundation
         let t1Job = t1Jobs[0]["id"] as? String ?? ""
         require(try task(plans, planID, t1)["status"] as? String == "dispatched" && (try task(plans, planID, t1))["workerTaskId"] as? String == t1Job, "t1 is linked to its worker task")
         require(try stage(plans, planID, 1)["status"] as? String == "working" && (try stage(plans, planID, 2))["status"] as? String == "proposed", "stage 1 is working, stage 2 untouched")
+        let started = ((try plans.plan(id: planID))?["notices"] as? [[String: Any]] ?? []).filter { ($0["refs"] as? [String: Any])?["started"] as? Bool == true }
+        require(started.count == 1 && started[0]["chat"] as? Bool == true && started[0]["text"] as? String == "Stage 1 started: Reproduce." && (started[0]["refs"] as? [String: Any])?["stageId"] as? String == stageIDs[0],
+                "a stage authorized in words gets its own line in the chat when it starts, where its work card goes: \(started)")
         let goal1 = t1Jobs[0]["goal"] as? String ?? ""
         require(goal1.hasPrefix("Authorization: the user asked \"get stage 1 done\" (") && goal1.contains("for stage 1, \"Reproduce\".\nStage goal: Reproduce the baseline results. Done when: The baseline table matches the paper; Vera signed off the method.\nYour task (Rerun the pipeline): Rerun the pipeline on a copy of the data.\nDeliverable: baseline.csv. Save files with Buddy file tools") && goal1.contains("\nStage boundary: produce only this task's deliverable. Do not start work for later stages; note any in your result's details, not in its message to the user.\nDecisions: decide what the decision policy lets you decide and state each choice with its reason in one line of your result's details.") && goal1.hasSuffix("it goes to Chief, your supervisor.") && !goal1.contains("Inputs from earlier tasks"), "t1's brief carries the authorization, the stage, the task and the boundary:\n\(goal1)")
         let working = (try plans.summary(workspace: w, jobs: store.jobs, names: names)).first ?? [:]
@@ -154,6 +157,10 @@ import Foundation
         // A question to the supervisor blocks the task; the answer resumes it; a rework starts a second, separate worker task.
         let t2Job = t2First[0]["id"] as? String ?? ""
         try store.update(t2Job, ["status": "running", "attempt": 1, "executionRunID": "r"])
+        for i in 1...10 { try store.update(t2Job, ["progress": "Step \(i)"]) }
+        try store.update(t2Job, ["progress": "Step 10 "])
+        let steps = (try store.job(t2Job))["trail"] as? [[String: Any]] ?? []
+        require(steps.map { $0["text"] as? String ?? "" } == (3...10).map { "Step \($0)" } && steps.allSatisfy { !($0["at"] as? String ?? "").isEmpty }, "a task keeps its newest eight steps, each once, with its time: \(steps)")
         try store.update(t2Job, ["status": "waiting_user", "checkpoint": ["id": "q1", "question": "Which table?", "routedTo": "supervisor"]])
         _ = try plans.reconcile(jobs: store.jobs)
         let t2Row = row(in: try plans.summary(workspace: w, jobs: store.jobs, names: names).first ?? [:], t2)
@@ -164,6 +171,10 @@ import Foundation
         try store.update(t2Job, ["status": "completed", "result": "Uses the wrong table."])
         _ = try plans.reconcile(jobs: store.jobs)
         try plans.rework(taskId: t2, instruction: "Use Table 2, not Table 3.", by: chief)
+        let decided = (((try plans.summary(workspace: w, jobs: store.jobs, names: names, forPage: true)).first?["stages"] as? [[String: Any]] ?? []).first?["decisions"] as? [[String: Any]]) ?? []
+        require(decided.contains { $0["kind"] as? String == "rework" && $0["by"] as? String == chief && $0["choice"] as? String == "Use Table 2, not Table 3." && $0["taskId"] as? String == t2 } && !decided.contains { $0["by"] as? String == "user" },
+                "the page's plan shows what Chief decided in the stage, and nothing the user decided: \(decided)")
+        require(((try plans.summary(workspace: w, jobs: store.jobs, names: names)).first?["stages"] as? [[String: Any]] ?? []).first?["decisions"] == nil, "the plan given to agents has no decision list")
         require(try task(plans, planID, t2)["status"] as? String == "pending", "a rework sends the task back")
         for _ in 0..<2 { _ = try plans.reconcile(jobs: store.jobs) }
         require(try task(plans, planID, t2)["status"] as? String == "pending", "the old finished worker task does not put the reworked task back in review")

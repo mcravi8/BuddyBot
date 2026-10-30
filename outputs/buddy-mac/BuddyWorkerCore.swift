@@ -699,6 +699,12 @@ struct BuddyAttempt {
         guard let i = jobs.firstIndex(where: { $0["id"] as? String == id }) else { throw BuddyWorkerFailure(message: "This task is unavailable.") }
         let old = jobs[i]
         var merged = old; merged.merge(Self.decimals(values)) { _, new in new }; merged["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        // A task's recent steps: each new progress line with its time, the newest `keptSteps`. The work card shows them on the task's row.
+        if let line = (values["progress"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty,
+           line != (old["progress"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines) {
+            let trail = (old["trail"] as? [[String: Any]] ?? []) + [["at": merged["updatedAt"] as? String ?? "", "text": String(line.prefix(240))]]
+            merged["trail"] = Array(trail.suffix(Self.keptSteps))
+        }
         // A copy of a review that arrives late (from the connection service) must not move an action backwards.
         if values["reviews"] != nil { merged = try keepingActionProgress(merged) }
         // No task has a limit on how many commands it runs or reviews it asks for: what its record no longer keeps goes to its history file.
@@ -724,7 +730,7 @@ struct BuddyAttempt {
     /// {"kind": "command" | "review", "value": …} per line, and the record counts them (archivedCommands, archivedReviews). Receipts a caller
     /// let go of (a Codex session keeps only its newest) go there too. A running command and an open review (waiting, approved, being sent,
     /// unconfirmed) always stay, and so does a review whose outcome changed in this update, so its action record sees the change first.
-    static let keptCommands = 100, keptReviews = 150
+    static let keptCommands = 100, keptReviews = 150, keptSteps = 8
     static let settledReviews: Set<String> = ["completed", "cancelled", "declined", "not_sent", "expired"]
     static func overflow(_ job: inout [String: Any], from old: [String: Any]) -> [[String: Any]] {
         var moved: [[String: Any]] = []

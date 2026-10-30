@@ -319,10 +319,10 @@
     if(!plan)return '';
     const said=banner(plan,pulse,names,now),seg=s=>`<span class="stage-seg${s.status==='done'?' done':['approved','working','review'].includes(s.status)?' now':''}"></span>`;
     const arrow='<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m10 7 5 5-5 5"/></svg>';
-    return `<button type="button" class="stage-strip tone-${TONE[runState(plan)]||'idle'}${offline?' offline':''}" data-chat-view="plan" data-stage-strip="${esc(plan.id)}" aria-label="Open the plan. ${esc(said)}"><span class="stage-segs" aria-hidden="true">${stagesOf(plan).map(seg).join('')}</span><span class="plan-banner">${esc(said)}</span>${offline?'<span class="stage-offline">May be out of date</span>':''}${arrow}</button>`;
+    return `<button type="button" class="stage-strip tone-${TONE[runState(plan)]||'idle'}${offline?' offline':''}" data-chat-view="plan" data-stage-strip="${esc(plan.id)}" aria-label="Team plan: ${esc(said)}"><span class="stage-segs" aria-hidden="true">${stagesOf(plan).map(seg).join('')}</span><span class="plan-banner">${esc(said)}</span>${offline?'<span class="stage-offline">May be out of date</span>':''}${arrow}</button>`;
   }
 
-  const api={planFor,stageChip,taskChip,banner,noticesToDeliver,deliverNotices,stripHTML,stageStripHTML,currentStage,replyOutcome,tone,stageDeliverables,noticeFiles,splitReport,askParts,firstLine,noticeCard};
+  const api={planFor,stageChip,taskChip,banner,noticesToDeliver,deliverNotices,stripHTML,stageStripHTML,currentStage,replyOutcome,tone,stageDeliverables,noticeFiles,splitReport,askParts,firstLine,noticeCard,aheadLine};
   root.BuddyPlan=api;if(typeof module!=='undefined')module.exports=api;
   if(typeof document==='undefined')return;
 
@@ -409,7 +409,8 @@
     if(typeof ui==='undefined'||ui.view?.kind!=='chat'||typeof refreshLiveChat!=='function')return;
     const target=ui.view.target,ids=new Set((state.messages?.[target]||[]).filter(m=>m?.planNotice).map(m=>m.planId));if(!ids.size)return;
     const plans=current().plans.filter(p=>ids.has(p?.id));
-    const sig=JSON.stringify([busy,plans.map(p=>[p.id,p.status,p.scope,stagesOf(p).map(s=>s.status),(p.notices||[]).map(n=>[n.id,n.status,n.refs?.answer||''])])]);
+    // A stage's work card (buddy-work-card.js) also follows its tasks, their steps and what was decided.
+    const sig=JSON.stringify([busy,plans.map(p=>[p.id,p.status,p.scope,stagesOf(p).map(s=>s.status),(p.notices||[]).map(n=>[n.id,n.status,n.refs?.answer||''])]),root.BuddyWorkCard?.signature?.(plans,root.BuddyWorkCard.jobs?.())||'']);
     // A chat just drawn already shows what the plan says; only a change after that draws its cards again.
     const fresh=drawnFor!==target;if(sig===drawn&&!fresh&&!force)return;
     drawn=sig;drawnFor=target;if(!fresh||force)refreshLiveChat(target);
@@ -470,13 +471,22 @@
   }
   // In a group, a plan notice is Chief's message: shown under Chief's name and figure, like each member's own message in the group. A notice
   // of a known plan is a card (a stage report, a decision, a stuck notice) or, for an authorization, one status line.
+  // What a work card reads besides the plan: the pulse, names, each task's worker task (its steps), a question's reply form, the stage's files.
+  function workContext(plan){
+    const known=names();
+    return {pulse:root.BuddyWorkerUI?.pulse?.(),names:known,sup:known[plan.supervisorId]||'Chief',jobs:root.BuddyWorkCard.jobs?.(),busy,replies,
+      markdown:s=>BuddyMarkdown.render(s),files:(p,stage)=>stageDeliverables(state,p,stage.id),filesHTML:files=>root.BuddyFiles?.cards?.(files)||'',avatar:id=>root.BuddyFigures?.avatarHTML?.({id},16)||''};
+  }
   if(typeof root.messageHTML==='function'){
     const original=root.messageHTML;
     root.messageHTML=function(m){
       if(!m?.planNotice)return original.apply(this,arguments);
       const files=deliverablesOf(m),agent=typeof findAgent==='function'?findAgent(m.who):null,group=!!agent&&typeof findGroup==='function'&&!!findGroup(ui.view?.target);
-      const plan=current().plans.find(p=>p?.id===m.planId),noticeId=String(m.id||'').replace(/^plan-notice-/,'');
-      const card=plan?noticeCard(plan,{...m,whoName:agent?.name},{filesHTML:root.BuddyFiles?.cards?.(files)||'',markdown:s=>BuddyMarkdown.render(s),busy,reply:replies.get(noticeId)}):null;
+      const {plans}=current(),plan=plans.find(p=>p?.id===m.planId),noticeId=String(m.id||'').replace(/^plan-notice-/,'');
+      // Its stage's work card, where the stage started; the stage's later notices are in that card, not again on their own.
+      const work=plan&&root.BuddyWorkCard?root.BuddyWorkCard.forMessage(m,state.messages?.[ui.view?.target]||[],plans,workContext(plan)):null;
+      if(work?.hidden)return '';
+      const card=work?.html?{label:work.label,html:work.html}:plan?noticeCard(plan,{...m,whoName:agent?.name},{filesHTML:root.BuddyFiles?.cards?.(files)||'',markdown:s=>BuddyMarkdown.render(s),busy,reply:replies.get(noticeId)}):null;
       if(card?.hidden)return '';
       if(card?.line)return `<div class="message plan-status-line${card.label==='Stuck'?' is-stuck':''}" data-plan-card="${esc(plan.id)}"><p><span class="plan-dot" aria-hidden="true"></span>${card.html}${m.time?`<time>${esc(m.time)}</time>`:''}</p></div>`;
       if(card){

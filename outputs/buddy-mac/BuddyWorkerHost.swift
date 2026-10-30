@@ -410,7 +410,7 @@ import Darwin
             // How many tasks may run at once (the person's setting), and which run now, oldest first.
             reply["maxRunning"] = store.maxRunning
             reply["running"] = runs.values.filter { $0.workspace == current }.sorted { $0.startedAt < $1.startedAt }.map(\.id)
-            reply["plans"] = (try? plans.summary(workspace: current, jobs: store.jobs, names: team.map(Self.names) ?? [:])) ?? []
+            reply["plans"] = (try? plans.summary(workspace: current, jobs: store.jobs, names: team.map(Self.names) ?? [:], forPage: true)) ?? []
             reply["supervisorLane"] = supervisor.status
             // Each supervisor's own lane (a project's Chief, and the team's), so the page knows whose items wait for a lane that runs.
             var lanes: [String: Any] = [:]

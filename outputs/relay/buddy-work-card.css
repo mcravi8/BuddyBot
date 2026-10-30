@@ -1,0 +1,80 @@
+/* The work card (buddy-work-card.js): a plan card whose rows are the stage's tasks on one rail, with who has each at the right, their figures
+   in one column; what is happening now under them; checks, a question or the result in the same card. Buddy's own tokens, so Light, Dark and
+   phones need nothing of their own. */
+.work-card{gap:10px;padding:14px 16px 13px}
+.work-card.flash{box-shadow:0 0 0 3px var(--line-strong);transition:box-shadow .3s}
+.wc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.wc-head-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+.work-card .wc-title{font-size:14.5px;font-weight:620;line-height:1.35}
+.wc-sub{font-size:12px;color:var(--text3);overflow-wrap:anywhere}
+.wc-chip{flex-shrink:0;display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--soft);color:var(--text2);font-size:11.5px;font-weight:600;white-space:nowrap}
+.wc-chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.wc-chip.working,.wc-chip.done{color:var(--ok);background:var(--ok-bg)}
+.wc-chip.needs{color:var(--warn);background:var(--warn-bg)}
+.wc-chip.review{color:var(--info);background:var(--info-bg)}
+.wc-link{padding:0;border:0;background:none;color:inherit;font:inherit;text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:2px;cursor:pointer}
+.wc-link:hover{color:var(--text);text-decoration-color:var(--text2)}
+/* The tasks on one rail. */
+.wc-rows{list-style:none;margin:0;padding:0;position:relative;display:flex;flex-direction:column}
+.wc-rows::before{content:"";position:absolute;left:8px;top:14px;bottom:14px;width:1.5px;background:var(--line-strong)}
+.wc-row{position:relative;display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:start;padding:5px 6px 5px 0;border-radius:10px}
+.wc-dot{position:relative;z-index:1;width:10px;height:10px;margin:5px 4px 0;border:2px solid var(--line-strong);border-radius:50%;background:var(--card);box-sizing:border-box}
+.wc-row.done .wc-dot{background:var(--ok);border-color:var(--ok)}
+.wc-row.working .wc-dot,.wc-row.retry .wc-dot{border-color:var(--ok);border-right-color:transparent}
+.wc-row.retry .wc-dot{border-color:var(--warn);border-right-color:transparent}
+.wc-row.needs .wc-dot{background:var(--warn);border-color:var(--warn)}
+.wc-row.review .wc-dot{border-color:var(--info)}
+.wc-row.skipped .wc-dot{border-style:dashed}
+@media(prefers-reduced-motion:no-preference){.wc-row.working .wc-dot,.wc-row.retry .wc-dot,.wc-ring{animation:wc-spin .9s linear infinite}}
+@keyframes wc-spin{to{transform:rotate(360deg)}}
+.wc-main{display:flex;flex-direction:column;gap:3px;min-width:0}
+.wc-task{padding:0;border:0;background:none;color:var(--text);font:inherit;font-size:13.5px;line-height:1.4;font-weight:560;text-align:left;overflow-wrap:anywhere}
+button.wc-task{cursor:pointer;text-decoration:underline;text-decoration-color:transparent;text-underline-offset:2px}
+button.wc-task:hover,.wc-row.pinned button.wc-task{text-decoration-color:var(--line-strong)}
+.wc-row.done .wc-task{font-weight:450}
+.wc-row.waiting .wc-task,.wc-row.skipped .wc-task{color:var(--text3);font-weight:450}
+.wc-row.skipped .wc-task{text-decoration:line-through}
+.wc-row.needs{background:var(--warn-bg)}
+.wc-row.needs .wc-task{color:var(--warn)}
+.wc-who{display:inline-flex;align-items:center;gap:6px;padding-top:1px;font-size:12px;color:var(--text3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.wc-who canvas,.wc-who .avatar{flex-shrink:0}
+.wc-decision{font-size:12.5px;line-height:1.45;color:var(--text2)}
+.wc-decision b{color:var(--text);font-weight:600}
+.wc-decision .wc-link{color:var(--text)}
+.wc-why{color:var(--text3)}
+/* A task's steps: on hover or keyboard focus over the row, or kept open with a tap. */
+.wc-pop{display:none;position:absolute;left:28px;top:calc(100% + 2px);z-index:6;width:min(340px,calc(100% - 28px));flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--line-strong);border-radius:12px;background:var(--card);box-shadow:0 14px 34px -16px rgba(0,0,0,.35)}
+.wc-row:hover>.wc-pop,.wc-row:focus-within>.wc-pop,.wc-row.pinned>.wc-pop{display:flex}
+.wc-pop-title{margin:0;font-size:11.5px;font-weight:600;color:var(--text2)}
+.wc-pop ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.wc-pop li{display:grid;grid-template-columns:58px minmax(0,1fr);gap:8px;font-size:12.5px;line-height:1.4;color:var(--text1)}
+.wc-pop time{font:11.5px var(--mono);color:var(--text3);padding-top:1px}
+.wc-pop-result{margin:0;font-size:12.5px;line-height:1.45;color:var(--text1)}
+/* What is happening now. */
+.wc-live{display:flex;align-items:center;gap:9px;min-height:20px;font-size:13px;color:var(--text2)}
+.wc-ring{flex-shrink:0;width:12px;height:12px;border:2px solid var(--text3);border-right-color:transparent;border-radius:50%;box-sizing:border-box}
+/* The stage's "done when", ticking off as Chief checks it. */
+.wc-checks{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.wc-check{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 10px 3px 8px;border:1px solid var(--line);border-radius:999px;font-size:12px;color:var(--text1)}
+.wc-check span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wc-check i{position:relative;flex-shrink:0;width:12px;height:12px}
+.wc-check.ok i::after{content:"";position:absolute;left:3px;top:0;width:4px;height:8px;border:solid var(--ok);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.wc-check.run i{border:2px solid var(--text3);border-right-color:transparent;border-radius:50%;box-sizing:border-box}
+@media(prefers-reduced-motion:no-preference){.wc-check.run i{animation:wc-spin .9s linear infinite}}
+/* A question or a hold for the person, at the bottom; its main button at the bottom right. */
+.work-card .plan-card{padding:12px 0 0;border:0;border-top:1px solid var(--line);border-radius:0;background:none;gap:10px}
+.wc-ask{display:flex;flex-direction:column;gap:10px;padding-top:12px;border-top:1px solid var(--line);font-size:13.5px}
+.wc-ask strong{font-weight:600}
+.wc-stuck p{color:var(--warn)}
+.wc-actions{display:flex;flex-wrap:wrap;gap:8px;flex-direction:row-reverse;margin-left:auto}
+.work-card .wc-actions .primary-button,.work-card .wc-actions .border-button{min-height:36px;padding:7px 14px;font-size:13px}
+.task-work-card>.wc-actions{margin-top:-2px}
+/* A finished stage: its result first, its tasks folded. */
+.wc-summary{font-size:13.5px;line-height:1.5;color:var(--text)}
+.wc-files .saved-file-cards{margin-top:0}
+.wc-fold{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;padding:0;border:0;background:none;color:var(--text2);font:inherit;font-size:12.5px;cursor:pointer}
+.wc-fold::before{content:"";border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid currentColor;transform:rotate(-90deg);transition:transform .15s}
+.wc-fold[aria-expanded=true]::before{transform:none}
+.wc-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding-top:10px;border-top:1px solid var(--line)}
+/* On a phone who has it goes under the title, still at the right, so the figures stay in one column. */
+@media(max-width:560px){.wc-row{grid-template-columns:18px minmax(0,1fr)}.wc-who{grid-column:2;justify-self:end;padding-top:0}.wc-pop{left:0;width:100%}}

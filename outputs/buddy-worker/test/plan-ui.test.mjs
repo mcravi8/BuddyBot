@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {chromium} from 'playwright-core';import {mkdtemp,rm} from 'node:fs/promises';import {existsSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 // The plan of the group chat: one line above the composer that opens the plan view, where a drafted plan asks which stage to get done, a tap
 // authorizes it, and the plan then says what the team is doing.
-test('the plan view offers the stages, authorizes the tapped one, then shows the work; the chat shows it in one line, at desktop and phone width, light and dark',{skip:process.platform!=='darwin'||!existsSync('/Applications/Google Chrome.app'),timeout:60000},async()=>{
+test('the plan view offers the stages, authorizes the tapped one, then shows the work; the chat shows it as one card, at desktop and phone width, light and dark',{skip:process.platform!=='darwin'||!existsSync('/Applications/Google Chrome.app'),timeout:60000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),'buddy-plan-ui-'));let context;
  try{
   context=await chromium.launchPersistentContext(join(dir,'browser.noindex'),{channel:'chrome',headless:true,viewport:{width:1120,height:850},reducedMotion:'reduce'});
@@ -62,11 +62,12 @@ test('the plan view offers the stages, authorizes the tapped one, then shows the
   for(const op of plan){assert.equal(op.arguments.action,'authorize');assert.equal(op.arguments.through,1);assert.equal(op.arguments.planId,'p1');assert.equal(op.arguments.quote,'Get stage 1 done','the person’s words: the button they tapped');assert.equal(op.actorId,undefined,'the tap is the person’s, not an agent’s');}
   assert.match(await strip.locator('.plan-strip-head').innerText(),/Working on Stage 1 of 3 — 0 of 2 tasks done — Lyra is working on “Collect five references” \(4 min\)/);
   assert.equal(await strip.getByRole('button',{name:/Get stage/}).count(),0);
-  // Escape goes back to the chat, where the authorization is one line, not a message.
+  // Escape goes back to the chat, where the authorized stage is one card that follows the work (buddy-work-card.js).
   await page.keyboard.press('Escape');
   assert.equal(await page.evaluate(()=>document.activeElement?.id),'message-input');
-  const notice=page.locator('#messages .plan-status-line').filter({hasText:'Stage 1 authorized'});await notice.waitFor();
-  assert.match(await notice.innerText(),/Stage 1 authorized · working on Stage 1 — Research/);
+  const notice=page.locator('#messages .work-card[data-work-card="p1:s1"]');await notice.waitFor();
+  assert.match(await notice.innerText(),/Research\s+Stage 1 of 3 · Whole plan\s+Working\s+Collect five references\s+, Working\s+Lyra · for 4 min\s+Write the direction\s+, Waiting\s+Forge\s+Lyra is working on “Collect five references”/);
+  assert.equal(await page.locator('#messages .plan-status-line').count(),0,'the authorization is the card, not a line besides it');
   await line.filter({hasText:/^Working on Stage 1 of 3/}).waitFor();
   await page.evaluate(()=>BuddyWorkerUI.refresh(false));await page.evaluate(()=>BuddyWorkerUI.refresh(false));
   assert.equal(await page.evaluate(()=>state.messages.team.filter(m=>m.id==='plan-notice-n1').length),1,'delivered once, however often the status is read');
@@ -95,9 +96,9 @@ test('the plan view offers the stages, authorizes the tapped one, then shows the
  }finally{await context?.close();await rm(dir,{recursive:true,force:true});}
 });
 
-// Plan notices as cards in the group chat: the stage report's next stage is chosen from the card, and Chief's question is answered from its card
-// with Approve, Disapprove or a written reply, each sent once as the person's own answer.
-test('a stage report and a decision are short messages in the chat, details a click away; the next stage and the answer are the person’s taps, sent once',{skip:process.platform!=='darwin'||!existsSync('/Applications/Google Chrome.app'),timeout:60000},async()=>{
+// Plan notices as cards in the group chat: a stage whose only message is its report is that stage's work card, done, its next stage chosen from
+// the card; Chief's question is answered from its card with Approve, Disapprove or a written reply, each sent once as the person's own answer.
+test('a finished stage is its card, the report a click away; a decision is a short message; the next stage and the answer are the person’s taps, sent once',{skip:process.platform!=='darwin'||!existsSync('/Applications/Google Chrome.app'),timeout:60000},async()=>{
  const dir=await mkdtemp(join(tmpdir(),'buddy-plan-cards-'));let context;
  try{
   context=await chromium.launchPersistentContext(join(dir,'browser.noindex'),{channel:'chrome',headless:true,viewport:{width:1280,height:900},reducedMotion:'reduce'});
@@ -127,12 +128,13 @@ test('a stage report and a decision are short messages in the chat, details a cl
    render();
   });
   await page.evaluate(()=>BuddyWorkerUI.refresh(false));
-  const report=page.locator('#messages [data-chat-item="plan-notice-r1"] .plan-card-report');await report.waitFor({timeout:8000});
-  assert.equal(await report.locator('.plan-card-line').innerText(),'Stage 1 is done · S01 PASS, independently signed off by Vera.','one line: which stage, and the point');
-  assert.equal(await report.getByText('Done when').isVisible(),false,'what it was checked against is a click away');
+  const report=page.locator('#messages [data-chat-item="plan-notice-r1"] .work-card');await report.waitFor({timeout:8000});
+  assert.equal(await report.getAttribute('data-work-state'),'done');
+  assert.equal(await report.locator('.wc-summary').innerText(),'S01 PASS, independently signed off by Vera.','the point, in a line');
+  assert.deepEqual(await report.locator('.wc-check.ok').allInnerTexts(),['spec_v1.sha256 saved'],'what it was checked against, ticked');
+  assert.equal(await report.locator('.plan-card-rows').isVisible(),false,'the whole report is a click away');
   await report.locator('.plan-card-more > summary').click();
-  assert.deepEqual(await report.locator('.plan-card-more .plan-card-rows dt').allInnerTexts(),['Acceptance','Outputs','Issues'],'Details shows the whole report');
-  assert.equal(await report.getByText('Done when').isVisible(),true);
+  assert.deepEqual(await report.locator('.plan-card-more .plan-card-rows dt').allInnerTexts(),['Acceptance','Outputs','Issues'],'Report shows the whole report');
   assert.equal(await page.locator('#messages [data-chat-item="plan-notice-r1"] .team-chat-author .message-author').innerText(),'Chief','under Chief’s name');
   await report.getByRole('button',{name:'Get stage 2 done',exact:true}).click();
   await report.getByText('Stage 2 started').waitFor({timeout:8000});

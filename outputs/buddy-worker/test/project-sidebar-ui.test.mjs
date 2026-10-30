@@ -153,7 +153,7 @@ test('a link to a file in a connected folder opens it in the viewer; a path outs
  }finally{await context?.close();await rm(directory,{recursive:true,force:true});}
 });
 
-test('a stage report in the group chat shows the files that stage’s tasks saved, without anyone asking',{skip,timeout:90000},async()=>{
+test('a finished stage’s card in the group chat shows the files that stage’s tasks saved, without anyone asking',{skip,timeout:90000},async()=>{
  const directory=await mkdtemp(path.join(tmpdir(),'buddy-project-sidebar-'));let context;
  try{
   const receipt=(p,date,actorName,kind='created')=>({id:'r-'+p+date,folderId:'research',path:p,revision:'v-'+date,kind,actor:actorName.toLowerCase(),actorName,date});
@@ -167,13 +167,14 @@ test('a stage report in the group chat shows the files that stage’s tasks save
   plan.notices=[{id:'old',kind:'stage_report',text:'Stage 1 — Audit is done (earlier report).',chat:true,status:'open',at:'2026-10-20T11:20:00Z',refs:{stageId:'s1'}},
    {id:'n2',kind:'stage_report',text:'Stage 1 — Audit is done.\n\nNext is Stage 2 — Draft.',chat:true,status:'open',at:'2026-10-20T11:30:00Z',refs:{stageId:'s1'}}];
   const opened=await open(directory,{width:1200,plans:[plan],messages});context=opened.context;const {page,errors}=opened;
-  const notice=page.locator('#messages [data-chat-item="plan-notice-n2"]');await notice.waitFor({timeout:8000});
-  const cards=notice.locator('.saved-file-cards .artifact-card');
+  // The stage is one card where it first came up in the chat (its earlier report); the later report is in that card (buddy-work-card.js).
+  const card=page.locator('#messages [data-chat-item="plan-notice-old"] .work-card');await card.waitFor({timeout:8000});
+  const cards=card.locator('.saved-file-cards .artifact-card');
   assert.deepEqual(await cards.locator('strong').allInnerTexts(),['paper_draft.md','paper_audit_corrections_2026-10-20.md'],'one card per file, newest first');
   assert.match(await cards.first().innerText(),/Saved by Forge/,'the latest save of the draft');
-  assert.equal(await page.evaluate(()=>state.messages.team.find(m=>m.id==='plan-notice-n2').files.length),2,'kept with the message');
-  const earlier=page.locator('#messages [data-chat-item="plan-notice-old"] .saved-file-cards .artifact-card');
-  assert.equal(await earlier.count(),2,'an earlier report shows them too');
+  assert.equal(await card.locator('.wc-summary').innerText(),'Stage 1 — Audit is done.','the latest report');
+  assert.equal(await page.locator('#messages [data-chat-item="plan-notice-n2"]').count(),0,'the later report is in the card, not again on its own');
+  assert.equal(await page.evaluate(()=>state.messages.team.find(m=>m.id==='plan-notice-n2').files.length),2,'kept with its message');
   assert.equal(await page.evaluate(()=>state.messages.team.find(m=>m.id==='plan-notice-old').files),undefined,'without rewriting what was saved');
   await cards.first().click();
   await page.locator('[data-project-view="paper_draft.md"]').waitFor({timeout:5000});

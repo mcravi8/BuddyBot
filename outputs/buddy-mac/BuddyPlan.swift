@@ -337,11 +337,12 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
         try db.rows("SELECT id FROM plans WHERE workspace = ? AND supervisor_id = ? AND status IN ('draft', 'active', 'holding') ORDER BY created_at, id", [.text(workspace), .text(agent)])
             .compactMap { $0.first?.string }.map { try render($0, jobs: [:], detail: true) }
     }
-    /// The plans for the status reply and the plan strip: every live plan, and plans achieved in the last 7 days, with live worker state.
-    func summary(workspace: String, jobs: [[String: Any]], names: [String: String]) throws -> [[String: Any]] {
+    /// The plans for the status reply and the plan strip: every live plan, and plans achieved in the last 7 days, with live worker state. The
+    /// page's copy (`forPage`) also has each stage's decisions made without the user, which its work card shows.
+    func summary(workspace: String, jobs: [[String: Any]], names: [String: String], forPage: Bool = false) throws -> [[String: Any]] {
         let since = Self.stamp(Date().addingTimeInterval(-7 * 86400)), byID = Self.index(jobs)
         return try db.rows("SELECT id FROM plans WHERE workspace = ? AND (status IN ('draft', 'active', 'holding') OR (status = 'achieved' AND updated_at >= ?)) ORDER BY created_at, id", [.text(workspace), .text(since)])
-            .compactMap { $0.first?.string }.map { try render($0, jobs: byID, detail: false) }
+            .compactMap { $0.first?.string }.map { try render($0, jobs: byID, detail: false, decisions: forPage) }
     }
     /// Who a blocked task is waiting for, read from its worker task. A run the user paused (on the task, with Pause all, or by stopping the
     /// plan) is `paused`: it waits for them to resume it, the supervisor has nothing to act on, and it is not a question for them either.
@@ -359,7 +360,7 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
         default: return "none"
         }
     }
-    private func render(_ planId: String, jobs: [String: [String: Any]], detail: Bool) throws -> [String: Any] {
+    private func render(_ planId: String, jobs: [String: [String: Any]], detail: Bool, decisions: Bool = false) throws -> [String: Any] {
         guard let plan = try planRow(planId) else { throw Self.missing() }
         let active = try activeScope(planId), latest = try latestScope(planId)
         let shown = active ?? (latest?.status == "achieved" ? latest : nil)
@@ -387,6 +388,12 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
             lastChange = max(lastChange, stage.updatedAt)
             var row: [String: Any] = ["id": stage.id, "n": stage.n, "title": stage.title, "goal": stage.goal, "acceptance": stage.acceptance, "status": stage.status, "tasks": tasks]
             if !stage.request.isEmpty { row["request"] = stage.request }
+            // What the supervisor (or Buddy) decided in this stage without asking: an answer to a teammate, work sent back, a task skipped or handed on.
+            if decisions {
+                row["decisions"] = try db.rows("SELECT kind, decided_by, question, choice, rationale, created_at, task_id FROM plan_decisions WHERE stage_id = ? AND decided_by <> 'user' AND kind IN ('answer', 'rework', 'waive', 'reassign') ORDER BY rowid DESC LIMIT 12", [.text(stage.id)]).reversed().map { r -> [String: Any] in
+                    ["kind": Self.s(r, 0), "by": Self.s(r, 1), "question": String(Self.s(r, 2).prefix(300)), "choice": String(Self.s(r, 3).prefix(400)), "rationale": String(Self.s(r, 4).prefix(400)), "at": Self.s(r, 5), "taskId": Self.s(r, 6)]
+                }
+            }
             stages.append(row)
         }
         let notices: [[String: Any]] = try db.rows("SELECT id, kind, text, chat, status, created_at, refs FROM plan_notices WHERE plan_id = ? ORDER BY rowid DESC LIMIT 20", [.text(planId)]).reversed().map { r -> [String: Any] in
@@ -574,7 +581,7 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
                 try db.run("UPDATE plans SET status = 'active', updated_at = ? WHERE id = ?", [.text(at), .text(planId)])
                 _ = try recordDecision(planId: planId, kind: "scope", by: "user", question: "", choice: "Through stage \(upTo)", rationale: quote, stageId: "", taskId: "", workerTaskId: "")
                 _ = try addNotice(planId: planId, kind: "authorized", text: "\(list) authorized. The team is working on Stage \(current.n) — \(current.title). I'll report when it's done. I'll only interrupt you for sign-ins, money, anything sent in your name, or a change to the plan.",
-                                  chat: viaButton, refs: ["through": upTo, "messageId": messageId])
+                                  chat: viaButton, refs: ["through": upTo, "messageId": messageId, "stageId": current.id])
             }
         }
         return try render(planId, jobs: [:], detail: true)
@@ -767,7 +774,10 @@ struct BuddyPlanTaskRef { let planId, stageId, taskId, assignee, kind, title: St
     func beginStages(workspace: String) throws {
         for plan in try activePlans(workspace: workspace) {
             guard let scope = try activeScope(plan.id), let stage = try currentStage(plan.id, through: scope.through), stage.status == "approved" else { continue }
-            try db.run("UPDATE plan_stages SET status = 'working', updated_at = ? WHERE id = ? AND status = 'approved'", [.text(Self.stamp()), .text(stage.id)])
+            guard try db.run("UPDATE plan_stages SET status = 'working', updated_at = ? WHERE id = ? AND status = 'approved'", [.text(Self.stamp()), .text(stage.id)]) == 1 else { continue }
+            // Each stage that starts has its place in the chat, where its work card is drawn: the authorization tapped for it, or this line.
+            let said = Self.n(try db.rows("SELECT COUNT(*) FROM plan_notices WHERE plan_id = ? AND chat = 1 AND json_extract(refs, '$.stageId') = ?", [.text(plan.id), .text(stage.id)]).first ?? [], 0)
+            if said == 0 { _ = try addNotice(planId: plan.id, kind: "authorized", text: "Stage \(stage.n) started: \(stage.title).", chat: true, refs: ["stageId": stage.id, "started": true]) }
         }
     }
     /// A working stage whose tasks are all done or waived is ready for its check. A stage with no tasks is not finished: it keeps working until

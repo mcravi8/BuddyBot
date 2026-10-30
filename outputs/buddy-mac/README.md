@@ -528,3 +528,15 @@ An agent can show its work as well as describe it (29 Oct, proposal "Buddy Reply
 **Answer buttons.** In blocks and in Buddy's existing cards (decision, folder access, sign-in, approval choices), the answer buttons sit at the bottom right, the main one rightmost.
 
 Tests: `tests/Blocks.swift` (every fix and refusal, the saved workbook, typed words, history), `relay/buddy-blocks.test.js` (text-only drawing, formats, answers, BuddyChat), `buddy-worker/test/blocks-ui.test.mjs` (all nine blocks in light, dark and at phone width with nothing touching, answering a choice and a form, the existing cards' buttons).
+
+## Work cards
+
+Each stage of a team plan is one card in the chat, where the stage started, kept up to date as the team works (29 Oct, proposal "Buddy Work Card"). The card shows the stage's tasks on one rail with who has each and since when (names, then figures, so the figures line up at the right), one line on what is happening now, what Chief or Buddy decided without asking (an answer to a teammate, work sent back, a task skipped or handed on) with **Change**, Chief's open question with its usual Approve, Disapprove and Reply, the stage's "done when" ticking off while it is checked, and, once done, its result, files and report with the tasks folded. Hovering or tapping a task shows the steps it took. The page draws all of it from Buddy's records (`relay/buddy-work-card.js`, `relay/buddy-work-card.css`); no model writes the card.
+
+**Where it goes.** The first plan message about a stage is its place: the tapped authorization, or the line a stage now says when it starts (`BuddyPlanStore.beginStages` posts "Stage N started: …" when no chat notice names that stage yet). The stage's later notices (its question, a stuck notice, its report) are shown in the card and not again on their own. A notice the plan no longer lists finds its stage by its words. The line above the composer brings the card into view when it is out of sight, and opens the plan view as before when the card is already in view or the chat has none.
+
+**What it reads.** Each task's last eight progress lines with their times (`trail`, kept by `BuddyWorkerStore.update`), and each stage's decisions not made by the user, sent with the page's copy of the plan only (`summary(..., forPage: true)`); the plan given to agents is unchanged.
+
+**One agent.** A background task started from an agent's own chat is a card of its steps in the reply that started it, its newest step live while it works, with View task; a task Buddy no longer has keeps its plain receipt.
+
+Tests: `tests/StagePlan.swift` (a stage's start line, the eight newest steps, the page's decisions), `relay/buddy-work-card.test.js` (placement, every state, text-only drawing, the task card, redraws), `buddy-worker/test/work-card-ui.test.mjs` (light, dark and a phone with the figures in one column, steps on hover and tap, Change, the line above the composer, a question answered from the card, a task card moving to Done) and `buddy-worker/test/plan-ui.test.mjs`.
