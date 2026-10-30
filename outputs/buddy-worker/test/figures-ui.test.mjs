@@ -15,26 +15,19 @@ test('figures are painted in rows, messages, previews and inline names; search, 
    window.appearance=[];BuddyDesktop={saveState:async()=>({saved:true}),setAppearance:c=>{appearance.push(c);}};ui.view={kind:'chat',target:'chief'};render();
   });
   await page.waitForTimeout(600);
-  // Rows hold slots, each with its agent's fold figure (buddy-fold-agents.js); the one dot field behind them is painted.
-  assert.equal(await page.locator('.sidebar canvas.sidebar-field').count(),1);
+  // Rows hold slots, each with its agent's or team's figure (buddy-agent-figures.js); the sidebar has no dot field behind them (29 Oct).
+  assert.equal(await page.locator('.sidebar canvas.sidebar-field').count(),0);
   assert.equal(await page.locator('.chat-row .fig-slot').count(),3);
-  assert.equal(await page.locator('.chat-row .fig-slot canvas.fold-fig').count(),3);
+  assert.equal(await page.locator('.chat-row .fig-slot canvas.agent-fig').count(),3);
+  assert.ok(await page.locator('.sidebar-header .fig-slot canvas[data-fig="logo"]').count()===1,'the logo has its own canvas in the header');
   assert.equal(await page.locator('img.avatar,.avatar img').count(),0,'no image avatars remain');
   const litPixels=sel=>page.evaluate(selector=>{const c=document.querySelector(selector);if(!c)return -1;const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>140)n++;return n;},sel);
-  // Pixel check: each row's figure is painted, and the dot field draws no old head behind it (the control spot is empty space).
-  const field=await page.evaluate(()=>{const f=document.querySelector('canvas.sidebar-field'),fr=f.getBoundingClientRect(),dpr=f.width/fr.width,ctx=f.getContext('2d');
-   const count=d=>{let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>140)n++;return n;};
-   const heavy=(cx,cy,r)=>count(ctx.getImageData(Math.max(0,(cx-r)*dpr),Math.max(0,(cy-r)*dpr),2*r*dpr,2*r*dpr).data);
-   const rows=[...document.querySelectorAll('.chat-row .fig-slot')];
-   const slots=rows.map(s=>{const c=s.querySelector('canvas.fold-fig');return c?count(c.getContext('2d').getImageData(0,0,c.width,c.height).data):-1;});
-   const behind=rows.map(s=>{const r=s.getBoundingClientRect();return heavy(r.left-fr.left+r.width/2,r.top-fr.top+r.height/2,22);});
-   return {slots,behind,empty:heavy(fr.width-30,fr.height-200,22)};});
-  for(const n of field.slots)assert.ok(n>60,`a figure is painted at each row (${field.slots})`);
-  for(const n of field.behind)assert.ok(n<5,`the dot field draws no old head behind a row's figure (${field.behind})`);
-  assert.ok(field.empty<5,'empty sidebar space carries no figure (control)');
+  // Pixel check: each row's figure is painted, and so is the logo.
+  const slots=await page.evaluate(()=>[...document.querySelectorAll('.chat-row .fig-slot canvas.agent-fig,.sidebar-header .fig-slot canvas')].map(c=>{const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>140)n++;return n;}));
+  for(const n of slots)assert.ok(n>60,`a figure is painted at each row and the logo in the header (${slots})`);
   assert.ok(await litPixels('.conversation-title canvas.fig')>60,'the header figure is painted');
   // The old names draw as the new figures before any migration runs, and loading a saved workspace rewrites them.
-  assert.deepEqual(await page.evaluate(()=>RelayTeam.migrate(state).agents.map(a=>a.avatarShape)),['diamond','pill']);
+  assert.deepEqual(await page.evaluate(()=>RelayTeam.migrate(state).agents.map(a=>a.avatarShape)),['diamond','sphere']);
   // Control: a canvas for an agent that does not exist stays blank.
   await page.evaluate(()=>{const c=document.createElement('canvas');c.className='fig';c.dataset.fig='agent';c.dataset.figId='nobody';c.dataset.size='40';c.width=40;c.height=40;c.id='ghost';document.getElementById('app').appendChild(c);});
   await page.waitForTimeout(400);assert.equal(await litPixels('#ghost'),0,'an unknown agent is not drawn');
@@ -64,12 +57,11 @@ test('figures are painted in rows, messages, previews and inline names; search, 
   assert.equal(await page.evaluate(()=>document.documentElement.dataset.theme),'light');
   await page.evaluate(()=>{closeModal();state.hiddenAgents=['scout'];state.hiddenAgentsOpen=true;ui.view={kind:'chat',target:'scout'};render();});
   await page.waitForTimeout(400);
-  const hiddenSpot=await page.locator('.hidden-agents [data-slot="row:scout"]').evaluate(el=>{const r=el.getBoundingClientRect(),f=document.querySelector('canvas.sidebar-field').getBoundingClientRect();return {x:r.left-f.left+r.width/2,y:r.top-f.top+r.height/2};});
-  const atHiddenSpot=()=>page.evaluate(({x,y})=>{const f=document.querySelector('canvas.sidebar-field'),r=f.getBoundingClientRect(),d=f.width/r.width,data=f.getContext('2d').getImageData((x-22)*d,(y-22)*d,44*d,44*d).data;let n=0;for(let i=0;i<data.length;i+=4)if(data[i+3]>140)n++;return n;},hiddenSpot);
+  const atHiddenSpot=()=>page.locator('.hidden-agents .fig-slot canvas.agent-fig').evaluate(c=>c.checkVisibility()?c.getContext('2d').getImageData(0,0,c.width,c.height).data.filter((v,i)=>i%4===3&&v>140).length:0);
   assert.ok(await atHiddenSpot()>60,'expanded Hidden agents are painted');
   await page.locator('.hidden-agents > summary').click();await page.waitForTimeout(400);
   assert.equal(await page.evaluate(()=>state.hiddenAgentsOpen),false);
-  assert.ok(await atHiddenSpot()<5,'collapsing Hidden removes its figures and selected-row paint from the shared canvas');
+  assert.equal(await atHiddenSpot(),0,'collapsing Hidden hides its figures');
   await page.locator('.hidden-agents > summary').focus();await page.keyboard.press('Space');await page.waitForTimeout(400);
   assert.ok(await atHiddenSpot()>60,'keyboard expansion paints the figures again');
   await page.locator('.hidden-agents > summary').click();
@@ -106,9 +98,9 @@ test('figures are painted in rows, messages, previews and inline names; search, 
   await page.waitForTimeout(150);
   assert.ok(await litPixels('.conversation-title canvas.fig')>60,'figures paint when background WebKit suspends animation callbacks');
   await page.locator('.hidden-agents > summary').click();await page.waitForTimeout(150);
-  // The hidden agent's fold figure (its own canvas in the row's slot) is painted at its open size.
+  // The hidden agent's figure (its own canvas in the row's slot) is painted at its open size.
   // A closed section shows none of its contents, whatever layout box the browser keeps for them.
-  const suspendedPixels=()=>page.locator('.hidden-agents .fig-slot canvas.fold-fig').evaluate(c=>!c.closest('details:not([open])')&&c.clientWidth>0&&c.width>=Math.round(c.clientWidth)?c.getContext('2d').getImageData(0,0,c.width,c.height).data.filter((v,i)=>i%4===3&&v>140).length:0);
+  const suspendedPixels=()=>page.locator('.hidden-agents .fig-slot canvas.agent-fig').evaluate(c=>!c.closest('details:not([open])')&&c.clientWidth>0&&c.width>=Math.round(c.clientWidth)?c.getContext('2d').getImageData(0,0,c.width,c.height).data.filter((v,i)=>i%4===3&&v>140).length:0);
   assert.ok(await suspendedPixels()>60,'Hidden expands without animation callbacks');
   await page.locator('.hidden-agents > summary').click();await page.waitForTimeout(150);
   assert.ok(await suspendedPixels()<5,'Hidden collapses without leaving canvas ghosts when animations are suspended');

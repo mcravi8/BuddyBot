@@ -1,6 +1,6 @@
-/* Halftone dot figures: one ink colour, eyes cut out as negative space, motion driven by real agent state.
-   Ported from the design handoff (Buddy Field Sidebar). The engine half is pure and unit-tested; the runtime half
-   finds canvas[data-fig] elements, paints the sidebar dot field, and follows the cursor. */
+/* Halftone dot figures: one ink colour, eyes cut out as negative space. Buddy's logo is drawn this way (ported from the design handoff,
+   Buddy Field Sidebar); agents and teams are drawn by buddy-agent-figures.js, and the sidebar no longer has a dot field (29 Oct). The engine
+   half is pure and unit-tested; the runtime half finds canvas[data-fig] elements and paints the logo, and keeps each agent's mode. */
 (function(root){
   'use strict';
   const TAU=Math.PI*2;
@@ -187,37 +187,26 @@
   }
 
   // ---- runtime ------------------------------------------------------------------------------------------------
+  // Agents and teams are painted by buddy-agent-figures.js; this runtime paints Buddy's logo, and any dot figure still asked for by id.
   const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let cfg={agent:()=>null,group:()=>null,agentIds:()=>[]};
   const sims={},modes={},focus={},focusGroup={},groupWork={};
-  let handoffs=[],timers=[],mouse=null,hoverId=null,hoverPrev=null,slotPos={},poked=0;
-  let clock=0,last=0,fc=0,raf=0,repaint=0,started=false,dirty=true,io=null,mo=null,canvases=[],calmQuery=null,paintedField=null;
+  let timers=[],clock=0,last=0,fc=0,raf=0,repaint=0,started=false,dirty=true,io=null,mo=null,canvases=[];
   const visible=new Set(),observed=new Set(),fresh=new Set();
-  let baseCache={key:'',canvas:null};
   const sim=id=>sims[id]||(sims[id]=mkSim());
   const configure=options=>{cfg=Object.assign({},cfg,options);requestPaint();};
-  // Extensions add to the field without the engine knowing what they draw: frame(host) runs before the figures step,
-  // listening(id)/sleeping(id) steer a figure's eyes and rest, and field(ctx) writes cells into the shared dot field.
-  const extensions=[];
-  const extend=ext=>{if(ext&&!extensions.includes(ext))extensions.push(ext);return ()=>{const k=extensions.indexOf(ext);if(k>=0)extensions.splice(k,1);};};
-  const call=(name,arg)=>{for(const ext of extensions)if(typeof ext[name]==='function'){try{ext[name](arg);}catch(error){console.error(`Buddy field extension ${name} failed`,error);}}};
-  const ask=(name,id,info)=>{for(const ext of extensions)if(typeof ext[name]==='function'){try{if(ext[name](id,info))return true;}catch(error){console.error(`Buddy field extension ${name} failed`,error);}}return false;};
   const later=(ms,fn)=>{const id=setTimeout(()=>{timers=timers.filter(x=>x!==id);fn();},ms);timers.push(id);};
+  // What each agent is doing (buddy-figure-modes.js sets it, buddy-agent-figures.js shows it). A finish and a stop last a moment.
   function setMode(id,mode){
     modes[id]=mode;
     if(mode==='done')later(1700,()=>{if(modes[id]==='done')modes[id]='ready';});
     if(mode==='stuck')later(8000,()=>{if(modes[id]==='stuck')modes[id]='ready';});
   }
   const getMode=id=>modes[id]||'ready';
+  // Who an agent is turned to in a team, and which member of a team is working: kept for whoever draws them.
   const setFocus=(id,target,groupId)=>{focus[id]=target||null;focusGroup[id]=target&&groupId?groupId:null;};
-  const handoff=(from,to)=>{if(from&&to&&from!==to)handoffs.push({from,to,t0:clock});};
+  const handoff=()=>{};
   const setGroupWork=(groupId,memberId)=>{if(memberId)groupWork[groupId]=memberId;else delete groupWork[groupId];};
-  const poke=()=>{poked=clock||.001;};
-  function vec(id,other){
-    const order=cfg.group(focusGroup[id])?.members||cfg.agentIds();
-    const a=HUD[Math.max(0,order.indexOf(id))%4],b=HUD[Math.max(0,order.indexOf(other))%4],dx=b.x-a.x,dy=b.y-a.y,dl=Math.hypot(dx,dy);
-    return dl<.001?[0,0]:[dx/dl*.8,dy/dl*.6];
-  }
 
   function canvasTag(kind,attrs,px){
     return `<canvas class="fig fig-${kind}" data-fig="${kind}" ${attrs} data-size="${px}" width="${px}" height="${px}" style="width:${px}px;height:${px}px" aria-hidden="true"></canvas>`;
@@ -232,36 +221,35 @@
     if(value&&value.id&&cfg.agent(value.id))return canvasTag('agent',`data-fig-id="${esc(value.id)}"`,px);
     return canvasTag('agent',`data-shape="${normShape(value?.avatarShape)}" data-color="${normColor(value?.avatarColor)}"`,px);
   }
-  // A placeholder the sidebar field draws a head into (the head is part of the field, not its own canvas).
-  const slotHTML=(kind,id,size,key)=>`<span class="fig-slot" data-slot="${esc(key||`row:${id}`)}" data-kind="${kind}" data-fig-id="${esc(id||'')}" data-size="${size}" style="width:${size}px;height:${size}px" aria-hidden="true"></span>`;
-  const fieldHTML=()=>'<canvas class="sidebar-field" aria-hidden="true"></canvas>';
+  // A sidebar place for a figure: buddy-agent-figures.js puts an agent's or a team's canvas in it; a logo place holds the logo.
+  const slotHTML=(kind,id,size,key)=>`<span class="fig-slot" data-slot="${esc(key||`row:${id}`)}" data-kind="${kind}" data-fig-id="${esc(id||'')}" data-size="${size}" style="width:${size}px;height:${size}px" aria-hidden="true">${kind==='logo'?`<canvas class="fig fig-logo" data-fig="logo" data-size="${size}" style="display:block;width:100%;height:100%" aria-hidden="true"></canvas>`:''}</span>`;
   function slotAvatarHTML(value,size){
     if(value&&Array.isArray(value.members))return value.members.some(id=>cfg.agent(id))?slotHTML('group',value.id,size):slotHTML('logo','',size,`row:${value.id}`);
     return value&&value.id?slotHTML('agent',value.id,size):slotHTML('logo','',size);
   }
 
   function membersOf(groupId){return (cfg.group(groupId)?.members||[]).slice(0,4).map(id=>cfg.agent(id)).filter(Boolean);}
-  // A figure in the chat's floating header is a still picture of who the chat is with: drawn from a pose that is never stepped (no blinking,
-  // glancing, breathing or working ring), whatever the agent is doing. The sidebar and the messages keep the live figures.
+  // Every dot figure is a still picture now: drawn from a pose that is never stepped (no blinking, glancing or breathing).
   let restPose=null;
   const rest=()=>restPose||(restPose=mkSim());
   function paintCanvas(el,t,dpr){
     // CSS decides how big the figure is drawn (a row, a header, a hero); data-size is only the default.
-    const kind=el.dataset.fig,size=el.clientWidth||+el.dataset.size||34,still=!!el.closest('.island');
+    const kind=el.dataset.fig,size=el.clientWidth||+el.dataset.size||34;
+    if(!size)return;
     let R,X;
     if(kind==='group'){
       const mem=membersOf(el.dataset.figId);if(!mem.length)return;
-      R=mem.map((a,k)=>mkR(still?rest():sim(a.id),normShape(a.avatarShape),normColor(a.avatarColor),HUD[k],t));
-      X={order:HUD_ORDER.filter(k=>k<R.length),rings:false,...groupSweep(R,t),amb:size>100?.28:0,clean:size<=100};
+      R=mem.map((a,k)=>mkR(rest(),normShape(a.avatarShape),normColor(a.avatarColor),HUD[k],t));
+      X={order:HUD_ORDER.filter(k=>k<R.length),rings:false,group:0,gprog:0,amb:0,clean:true};
     }else{
-      let shape,color,M,pos={x:0,y:0,s:1.12};
+      let shape,color,pos={x:0,y:0,s:1.12};
       if(kind==='agent'){
         const a=el.dataset.figId?cfg.agent(el.dataset.figId):null;
         if(el.dataset.figId&&!a)return;
-        shape=normShape(a?a.avatarShape:el.dataset.shape);color=normColor(a?a.avatarColor:el.dataset.color);M=still?rest():sim(a?a.id:'anon');
-      }else{shape='pill';color='graphite';M=sim('logo');pos={x:0,y:.02,s:1.32};}
-      R=[mkR(M,shape,color,pos,t)];
-      X={order:[0],rings:true,group:0,amb:size>100?.25:0,clean:size<=100};
+        shape=normShape(a?a.avatarShape:el.dataset.shape);color=normColor(a?a.avatarColor:el.dataset.color);
+      }else{shape='pill';color='graphite';pos={x:0,y:.02,s:1.32};}
+      R=[mkR(kind==='logo'?sim('logo'):rest(),shape,color,pos,t)];
+      X={order:[0],rings:true,group:0,amb:0,clean:true};
     }
     const px=Math.round(size*dpr);
     if(el.width!==px){el.width=px;el.height=px;}
@@ -272,184 +260,33 @@
     drawAv(c,n,es,R,X,t);
   }
 
-  function renderedRect(el){
-    // Closed details can retain layout boxes for their skipped contents. The shared
-    // canvas must respect disclosure visibility instead of painting those boxes.
-    for(let detail=el.closest('details:not([open])');detail;detail=detail.parentElement?.closest('details:not([open])')){
-      if(!detail.querySelector(':scope > summary')?.contains(el))return null;
-    }
-    const r=el.getBoundingClientRect();
-    if(!r.width||!r.height)return null;
-    const visibility=getComputedStyle(el).visibility;
-    return visibility==='hidden'||visibility==='collapse'?null:r;
-  }
-
-  function paintField(side,cv,t,dpr){
-    const rect=side.getBoundingClientRect(),W=rect.width,H=rect.height,P=2.6;
-    if(W<8||H<8||rect.right<=0)return;
-    const pw=Math.round(W*dpr),ph=Math.round(H*dpr);
-    if(cv.width!==pw||cv.height!==ph){cv.width=pw;cv.height=ph;}
-    const cols=Math.ceil(W/P),rows=Math.ceil(H/P),N=cols*rows;
-    if(!paintField.buf||paintField.buf.N!==N)paintField.buf={N,val:new Float32Array(N),cr:new Float32Array(N),cg:new Float32Array(N),cb:new Float32Array(N),mark:new Uint8Array(N),list:new Int32Array(N),n:0};
-    const B=paintField.buf;
-    for(let k=0;k<B.n;k++){const id=B.list[k];B.mark[id]=0;B.val[id]=0;}
-    B.n=0;
-    let clipY0=-Infinity,clipY1=Infinity;
-    const put=(i,j,v,col)=>{
-      if(v<=.012||i<0||j<0||i>=cols||j>=rows)return;
-      const y=(j+.5)*P;if(y<clipY0||y>clipY1)return;
-      const id=j*cols+i;
-      if(!B.mark[id]){B.mark[id]=1;B.list[B.n++]=id;}else if(v<=B.val[id])return;
-      B.val[id]=Math.min(1,v);B.cr[id]=col[0];B.cg[id]=col[1];B.cb[id]=col[2];
-    };
-    const list=side.querySelector('.chat-list'),lr=list&&list.getBoundingClientRect();
-    const listY0=lr?lr.top-rect.top:-Infinity,listY1=lr?lr.bottom-rect.top:Infinity;
-    const pos={};
-    for(const el of side.querySelectorAll('[data-slot]')){
-      const r=renderedRect(el);
-      if(!r)continue;
-      pos[el.dataset.slot]={x:r.left-rect.left+r.width/2,y:r.top-rect.top+r.height/2,spec:{kind:el.dataset.kind,id:el.dataset.figId,size:+el.dataset.size||50},scroll:el.dataset.slot.startsWith('row:')};
-    }
-    slotPos={};for(const key in pos)slotPos[key]=pos[key];
-    for(const key in pos){
-      const p=pos[key];if(p.spec.kind!=='group')continue;
-      (cfg.group(p.spec.id)?.members||[]).slice(0,4).forEach((id,k)=>{if(!slotPos['row:'+id])slotPos['row:'+id]={x:p.x+HUD[k].x*p.spec.size/2,y:p.y+HUD[k].y*p.spec.size/2};});
-    }
-    const rowEls=[...side.querySelectorAll('.chat-row[data-id]')].filter(el=>renderedRect(el));
-    hoverId=null;
-    if(mouse){const mx=mouse.x+rect.left,my=mouse.y+rect.top;for(const el of rowEls){const r=el.getBoundingClientRect();if(mx>=r.left&&mx<=r.right&&my>=r.top&&my<=r.bottom){hoverId=el.dataset.id;break;}}}
-    const sel=rowEls.find(el=>el.classList.contains('selected')||el.getAttribute('aria-current')==='page');
-    if(sel){
-      const r=sel.getBoundingClientRect(),x0=r.left-rect.left,y0=r.top-rect.top,w=r.width,h=r.height;
-      clipY0=listY0;clipY1=listY1;
-      for(let j=Math.max(0,Math.floor(y0/P));j<=Math.min(rows-1,Math.ceil((y0+h)/P));j++)for(let i=Math.max(0,Math.floor(x0/P));i<=Math.min(cols-1,Math.ceil((x0+w)/P));i++){
-        const px=(i+.5)*P-x0,py=(j+.5)*P-y0;
-        if(sdBox(px-w/2,py-h/2,w/2,h/2,14)>0)continue;
-        put(i,j,.17-.07*(px/w)+.02*Math.sin(px*.08-t*2),NEU);
-      }
-      clipY0=-Infinity;clipY1=Infinity;
-    }
-    if(mouse){
-      const mx=mouse.x,my=mouse.y,R0=48;
-      for(let j=Math.max(0,Math.floor((my-R0)/P));j<=Math.min(rows-1,Math.ceil((my+R0)/P));j++)for(let i=Math.max(0,Math.floor((mx-R0)/P));i<=Math.min(cols-1,Math.ceil((mx+R0)/P));i++){
-        const d=Math.hypot((i+.5)*P-mx,(j+.5)*P-my);if(d<R0)put(i,j,.2*Math.pow(1-d/R0,2),NEU);
-      }
-    }
-    const curve=(a,b,s)=>{const c={x:Math.min(a.x,b.x)-34,y:(a.y+b.y)/2},k=1-s;return {x:k*k*a.x+2*k*s*c.x+s*s*b.x,y:k*k*a.y+2*k*s*c.y+s*s*b.y};};
-    const blob=(p,a,col,rr)=>{
-      for(let j=Math.max(0,Math.floor((p.y-rr)/P));j<=Math.min(rows-1,Math.ceil((p.y+rr)/P));j++)for(let i=Math.max(0,Math.floor((p.x-rr)/P));i<=Math.min(cols-1,Math.ceil((p.x+rr)/P));i++){
-        const dd=Math.pow((i+.5)*P-p.x,2)+Math.pow((j+.5)*P-p.y,2);put(i,j,a*Math.exp(-dd/(rr*rr*.35)),col);
-      }
-    };
-    const inkOf=id=>{const a=cfg.agent(id);return a?INKRGB[normColor(a.avatarColor)][DARK?1:0]:NEU;};
-    const streams=[];
-    for(const gid in groupWork){const gp=slotPos['row:'+gid],mp=slotPos['row:'+groupWork[gid]];if(gp&&mp)streams.push({a:mp,b:gp,col:inkOf(groupWork[gid]),n:6,speed:.55,amp:.75});}
-    handoffs=handoffs.filter(h=>t-h.t0<1.6);
-    for(const h of handoffs){const a=slotPos['row:'+h.from],b=slotPos['row:'+h.to];if(a&&b)streams.push({a,b,col:inkOf(h.from),n:10,speed:.9,amp:Math.sin((t-h.t0)/1.6*Math.PI)});}
-    clipY0=listY0;clipY1=listY1;
-    for(const st of streams)for(let q=0;q<st.n;q++){const s=(t*st.speed+q/st.n)%1,p=curve(st.a,st.b,s);blob(p,st.amp*(.25+.75*Math.sin(s*Math.PI)),st.col,6);}
-    clipY0=-Infinity;clipY1=Infinity;
-    if(extensions.length){
-      const rowMap=new Map(rowEls.map(el=>[el.dataset.id,el]));
-      call('field',{t,P,cols,rows,W,H,rect,side,put,blob,pos,slotPos,rowEls:rowMap,hoverId,mouse,NEU,DARK,calm:!!(calmQuery&&calmQuery.matches),cfg,
-        clip:on=>{if(on){clipY0=listY0;clipY1=listY1;}else{clipY0=-Infinity;clipY1=Infinity;}},
-        inkOf:id=>inkOf(cfg.group(id)?.members?.[0]||id),
-        getMode:id=>modes[id]||'ready',sim,compact:!!side.closest('.sidebar-compact')});
-      clipY0=-Infinity;clipY1=Infinity;
-    }
-    for(const key in pos){
-      const {x:cx,y:cy,spec,scroll}=pos[key],half=spec.size/2;
-      if(cy<-half*3||cy>H+half*3)continue;
-      if(scroll){clipY0=listY0;clipY1=listY1;}else{clipY0=-Infinity;clipY1=Infinity;}
-      let R,X;
-      if(spec.kind==='group'){
-        const mem=membersOf(spec.id);if(!mem.length)continue;
-        R=mem.map((a,k)=>Object.assign(mkR(sim(a.id),normShape(a.avatarShape),normColor(a.avatarColor),HUD[k],t),{pulse:1}));
-        X={order:HUD_ORDER.filter(k=>k<R.length),rings:false,...groupSweep(R,t)};
-      }else{
-        const a=spec.kind==='agent'?cfg.agent(spec.id):null;if(spec.kind==='agent'&&!a)continue;
-        const M=a?sims[a.id]:sims.logo;if(!M)continue;
-        R=[Object.assign(mkR(M,a?normShape(a.avatarShape):'pill',a?normColor(a.avatarColor):'graphite',a?{x:0,y:0,s:1.05}:{x:0,y:.02,s:1.25},t),{pulse:1})];
-        X={order:[0],rings:true,group:0};
-        if(a){
-          const col=INKRGB[normColor(a.avatarColor)][DARK?1:0],pt=t-M.pulseT;
-          if(pt>=0&&pt<1.8){
-            const rr=half+pt/1.8*150,fade=1-pt/1.8,R1=rr+10;
-            for(let j=Math.max(0,Math.floor((cy-R1)/P));j<=Math.min(rows-1,Math.ceil((cy+R1)/P));j++)for(let i=Math.max(0,Math.floor((cx-R1)/P));i<=Math.min(cols-1,Math.ceil((cx+R1)/P));i++){
-              const d=Math.hypot((i+.5)*P-cx,(j+.5)*P-cy),dz=Math.abs(d-rr);if(dz<9)put(i,j,.55*fade*Math.exp(-dz*dz/14),col);
-            }
-          }
-        }
-      }
-      headCells(put,cx,cy,half,R,X,P,cols,rows);
-    }
-    const c=cv.getContext('2d');
-    c.setTransform(1,0,0,1,0,0);c.clearRect(0,0,pw,ph);
-    const key=`${pw}x${ph}:${DARK}`;
-    if(baseCache.key!==key){
-      const base=document.createElement('canvas');base.width=pw;base.height=ph;
-      const b=base.getContext('2d');b.scale(dpr,dpr);b.fillStyle=DARK?'rgba(242,240,234,.07)':'rgba(20,20,20,.075)';
-      for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){b.beginPath();b.arc((i+.5)*P,(j+.5)*P,.32,0,TAU);b.fill();}
-      baseCache={key,canvas:base};
-    }
-    c.drawImage(baseCache.canvas,0,0);
-    c.setTransform(dpr,0,0,dpr,0,0);
-    const rMax=.62*P;
-    for(let k=0;k<B.n;k++){
-      const id=B.list[k],v=B.val[id],i=id%cols,j=(id-i)/cols;
-      c.beginPath();c.arc((i+.5)*P,(j+.5)*P,.32+v*(rMax-.32),0,TAU);
-      c.fillStyle=`rgba(${B.cr[id]|0},${B.cg[id]|0},${B.cb[id]|0},${Math.min(1,.2+v*1.6)})`;
-      c.fill();
-    }
-  }
-
   function rescan(){
     canvases=[...document.querySelectorAll('canvas[data-fig]')];
     const live=new Set(canvases);
     for(const el of observed)if(!live.has(el)){if(io)io.unobserve(el);observed.delete(el);visible.delete(el);}
-    // A canvas that was just inserted is painted at once so a re-render never flashes empty avatars.
+    // A canvas that was just inserted is painted at once so a re-render never flashes an empty logo.
     for(const el of canvases)if(!observed.has(el)){if(io)io.observe(el);observed.add(el);fresh.add(el);}
     dirty=false;
   }
+  // The pictures are still, so a canvas is painted when it appears, changes size or the theme changes, not every frame.
   function frame(force=false){
     const tn=performance.now()/1000,dt=Math.min(1/30,tn-(last||tn));last=tn;
     clock+=dt;
-    const calm=!!(calmQuery&&calmQuery.matches);
     if(dirty)rescan();
-    const side=document.querySelector('.sidebar'),fieldEl=side&&side.querySelector('canvas.sidebar-field');
-    sim('logo');sim('anon');
-    const ids=new Set([...cfg.agentIds(),...Object.keys(sims)]);
-    if(extensions.length)call('frame',{clock,dt,calm,ids:cfg.agentIds(),cfg,sim,getMode:id=>modes[id]||'ready',hoverId});
-    for(const id of ids){
-      // Buddy's own logo (the sidebar's header and its workspace button) is a mark, not a character: it keeps its resting pose, with no
-      // blinking, glancing, breathing or bounce.
-      if(id==='logo')continue;
-      const M=sim(id),f=focus[id],mode=modes[id]||'ready',known=!!cfg.agent(id);
-      let fv=f==='user'?[0,0]:f&&f!==id?vec(id,f):null;
-      const sp=slotPos['row:'+id];
-      if(ask('listening',id,{mode,known}))fv=[.9,.05];
-      else if(mouse&&sp){const dx=mouse.x-sp.x,dy=mouse.y-sp.y,dd=Math.hypot(dx,dy)||1,k=Math.min(1,dd/70);fv=[dx/dd*k*.85,dy/dd*k*.65];}
-      if(hoverId===id&&hoverPrev!==id){M.S.sy.v+=1.1;M.S.sx.v-=.5;}
-      stepSim(M,mode,fv,clock,dt,hoverId===id,calm,known&&ask('sleeping',id,{mode,known}));
-    }
-    hoverPrev=hoverId;
-    if(poked){if(!calm){const m=sim('anon');m.spinT=clock;m.S.by.v-=1.2;}poked=0;}
+    sim('logo');
     fc++;
     const dpr=Math.min(2,window.devicePixelRatio||1);
-    // A sidebar that was just rebuilt is painted at once, so a re-render never shows the dot field blank for a frame.
-    if(fieldEl&&(force||fieldEl!==paintedField||fc%2===0)){paintField(side,fieldEl,clock,dpr);paintedField=fieldEl;}
-    let i=0;
     for(const el of canvases){
-      i++;
-      if(!force&&!fresh.has(el)&&((i+fc)%2||(io&&!visible.has(el))))continue;
-      fresh.delete(el);
+      const size=el.clientWidth;
+      if(!force&&!fresh.has(el)&&el.paintedAt===size)continue;
+      if(!size&&!fresh.has(el)&&!force)continue;
+      fresh.delete(el);el.paintedAt=size;
       paintCanvas(el,clock,dpr);
     }
   }
   function drawFrame(force=false){try{frame(force);}catch(error){console.error('Buddy figures stopped painting',error);}}
   function requestPaint(){
-    // WebKit can suspend animation callbacks while the app is behind another window.
-    // Paint changed content once anyway; animations still use the normal frame loop.
+    // WebKit can suspend animation callbacks while the app is behind another window. Paint changed content once anyway.
     if(!started||repaint)return;
     repaint=setTimeout(()=>{repaint=0;drawFrame(true);},32);
   }
@@ -457,26 +294,19 @@
     if(started||typeof document==='undefined')return;
     if(!document.body){document.addEventListener('DOMContentLoaded',start,{once:true});return;}
     started=true;
-    if(typeof matchMedia!=='undefined')calmQuery=matchMedia('(prefers-reduced-motion: reduce)');
     if(typeof IntersectionObserver!=='undefined')io=new IntersectionObserver(entries=>{for(const e of entries)e.isIntersecting?visible.add(e.target):visible.delete(e.target);});
     mo=new MutationObserver(()=>{dirty=true;requestPaint();});mo.observe(document.body,{childList:true,subtree:true});
+    new MutationObserver(requestPaint).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
     document.addEventListener('toggle',requestPaint,true);
     window.addEventListener('resize',requestPaint);
-    document.addEventListener('mousemove',e=>{
-      const side=e.target.closest&&e.target.closest('.sidebar');
-      if(!side){mouse=null;return;}
-      const r=side.getBoundingClientRect();mouse={x:e.clientX-r.left,y:e.clientY-r.top};
-    },{passive:true});
-    document.documentElement.addEventListener('mouseleave',()=>{mouse=null;});
-    const loop=()=>{clearTimeout(repaint);repaint=0;drawFrame();raf=requestAnimationFrame(loop);};
+    const loop=()=>{drawFrame();raf=requestAnimationFrame(loop);};
     raf=requestAnimationFrame(loop);
     requestPaint();
   }
   function stop(){cancelAnimationFrame(raf);clearTimeout(repaint);repaint=0;document.removeEventListener('toggle',requestPaint,true);window.removeEventListener('resize',requestPaint);timers.forEach(clearTimeout);timers=[];started=false;if(io)io.disconnect();if(mo)mo.disconnect();io=mo=null;observed.clear();visible.clear();fresh.clear();}
 
   const engine={mkSim,stepSim,mkR,prep,evalM,drawAv,gridFor,headCells,sdBox,sdHex,eyeSD,setDark,HUD,HUD_ORDER,EYEDX,hash,easeIO,rnd,sst,TAU,groupSweep,trail,LAP};
-  const hovered=()=>hoverId;
-  const api={hovered,extend,now:()=>clock,sim:id=>sims[id]||null,avatarHTML,logoHTML,slotHTML,slotAvatarHTML,fieldHTML,setMode,getMode,setFocus,handoff,setGroupWork,poke,configure,setDark,start,stop,normShape,normColor,INK,SHAPES,LEGACY_SHAPE,LEGACY_COLOR,engine};
+  const api={now:()=>clock,sim:id=>sims[id]||null,avatarHTML,logoHTML,slotHTML,slotAvatarHTML,setMode,getMode,setFocus,handoff,setGroupWork,configure,setDark,start,stop,normShape,normColor,INK,SHAPES,LEGACY_SHAPE,LEGACY_COLOR,engine};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   root.BuddyFigures=api;
   if(typeof document!=='undefined')start();

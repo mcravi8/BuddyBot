@@ -1,0 +1,23 @@
+/* Agent figures (buddy-agent-figures.js, 29 Oct). The sidebar has no dot field any more, so a row shows its own hover and selection, and
+   an unread count (buddy-unread.js) beside the name or, folded, on the figure. The Eyes field of the Create an agent dialog and of an agent's
+   settings: eyes from the role (or the job), or one of 14 picked. */
+.sidebar .chat-row{position:relative}
+.sidebar .chat-row:hover{background:var(--soft)}
+.sidebar .chat-row.selected{background:var(--hover);box-shadow:inset 0 0 0 1px var(--line)}
+.sidebar .chat-row.has-unread .chat-snippet{padding-right:26px}
+.row-unread{position:absolute;right:12px;bottom:14px;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--text);color:var(--bg);font:700 10.5px/18px var(--sans,system-ui);text-align:center;font-variant-numeric:tabular-nums;pointer-events:none}
+.shell.sidebar-compact .row-unread{right:auto;bottom:auto;left:40px;top:5px;min-width:16px;height:16px;padding:0 4px;font-size:10px;line-height:16px;box-shadow:0 0 0 2px var(--bg)}
+
+.shape-choice canvas.agent-fig{width:48px;height:48px}
+.agent-config-form .eyes-field .eyes-from{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:0 0 8px;font-size:12px;line-height:1.4;color:var(--text2)}
+.agent-config-form .eyes-field .eyes-from .small-link{min-height:0;padding:0;font-size:12px}
+.eye-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:6px}
+.eye-picker[hidden]{display:none}
+.eye-choice{position:relative;cursor:pointer;min-width:0}
+.eye-choice.eye-from{grid-column:span 2}
+.eye-choice>input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%!important;height:100%!important;padding:0!important;margin:0!important}
+.eye-choice>span{display:flex;align-items:center;justify-content:center;height:48px;padding:0 4px;border:1px solid var(--line);border-radius:10px;background:var(--card);text-align:center}
+.eye-choice canvas.agent-fig{width:40px;height:40px}
+.eye-choice small{font-size:11px;line-height:1.2;color:var(--text2)}
+.eye-choice input:checked+span{border-color:var(--ink);background:var(--soft)}
+.eye-choice input:focus-visible+span{outline:2px solid var(--text3);outline-offset:2px}

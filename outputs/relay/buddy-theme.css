@@ -35,8 +35,8 @@ button,input,textarea,select{font-family:inherit}
 /* ---- sidebar: one dot field behind everything ---- */
 :where(.sidebar){position:relative}
 .sidebar{background:var(--side);border-right:1px solid var(--line);padding:0;overflow:hidden;min-width:0}
-.sidebar>*:not(.sidebar-field){position:relative;z-index:1}
-.sidebar-field{position:absolute!important;inset:0;width:100%;height:100%;pointer-events:none;z-index:0!important}
+/* Two classes of weight on purpose: the wide header stays the frame its buttons are placed in, and the rail's own rule still wins. */
+.sidebar>*:not(.sidebar-none){position:relative;z-index:1}
 .fig-slot{display:block;flex:none}
 .sidebar-header{padding:20px 14px 14px;min-height:78px;gap:8px}
 .sidebar-header .buddy-brand{gap:8px}

@@ -1902,9 +1902,9 @@ enum BuddyAgentChanges {
     static let appFields: Set<String> = ["role", "instructions"]
     static func adopter(scope: String, field: String) -> String { scope == "agent" ? (pageFields.contains(field) ? "page" : appFields.contains(field) ? "app" : "") : "" }
     /// Must match BuddyAvatar (tests that compile both check it); repeated here so the worker core stands alone.
-    static let avatarShapes = ["square", "sphere", "hex", "pill", "capsule", "arch", "diamond"]
+    static let avatarShapes = ["square", "sphere", "hex", "diamond"]
     static let avatarColors = ["lilac", "blue", "peach", "mint", "red", "gold", "cobalt"]
-    static let legacyShapes = ["star": "diamond", "pebble": "sphere", "cube": "hex", "clover": "pill"]
+    static let legacyShapes = ["star": "diamond", "pebble": "sphere", "cube": "hex", "clover": "sphere", "pill": "sphere", "capsule": "sphere", "arch": "square"]
     static func shape(_ value: String) -> String? { let id = legacyShapes[value] ?? value; return avatarShapes.contains(id) ? id : nil }
     static func fields(_ scope: String) -> Set<String> { scope == "workspace" ? workspaceFields : agentFields }
     static func fail(_ message: String) -> BuddyWorkerFailure { BuddyWorkerFailure(message: message) }

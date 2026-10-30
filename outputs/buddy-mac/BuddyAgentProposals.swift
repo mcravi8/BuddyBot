@@ -1,11 +1,12 @@
 import Foundation
 
-/// Agents are drawn as fold figures: seven shapes in seven inks ("sphere" is the circle, "capsule" the sideways pill). Saved workspaces and
-/// models that still use the original 3D shape names are accepted and become the figure that replaced them.
+/// Agents are drawn as agent figures (29 Oct): four shapes in seven inks ("sphere" is the circle), with eyes from their role. Saved
+/// workspaces and models that still use an earlier shape name (the original 3D shapes, or the fold figures' pill, sideways pill and arch)
+/// are accepted and become the figure that replaced it.
 enum BuddyAvatar {
-    static let shapes = ["square", "sphere", "hex", "pill", "capsule", "arch", "diamond"]
+    static let shapes = ["square", "sphere", "hex", "diamond"]
     static let colors = ["lilac", "blue", "peach", "mint", "red", "gold", "cobalt"]
-    static let legacyShapes = ["star": "diamond", "pebble": "sphere", "cube": "hex", "clover": "pill"]
+    static let legacyShapes = ["star": "diamond", "pebble": "sphere", "cube": "hex", "clover": "sphere", "pill": "sphere", "capsule": "sphere", "arch": "square"]
     static func shape(_ value: String) -> String? { let id = legacyShapes[value] ?? value; return shapes.contains(id) ? id : nil }
 }
 

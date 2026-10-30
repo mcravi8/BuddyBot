@@ -17,8 +17,8 @@ test('the logo and the chat header’s figure stay still while the agent works',
   });
   const island=page.locator('.island .conversation-title canvas[data-fig]');await island.waitFor();
   await page.waitForTimeout(600);
-  const look=()=>page.evaluate(()=>{const c=document.querySelector('.island .conversation-title canvas[data-fig]'),logo=BuddyFigures.sim('logo'),forge=BuddyFigures.sim('forge');
-   return {island:c.toDataURL(),logo:JSON.stringify([Object.values(logo.S).map(s=>[s.x,s.v]),logo.blinkT,logo.spinT]),forge:forge.prog};});
+  const look=()=>page.evaluate(()=>{const c=document.querySelector('.island .conversation-title canvas[data-fig]'),logo=BuddyFigures.sim('logo'),forge=BuddyAgentFigures.sim('forge');
+   return {island:c.toDataURL(),logo:JSON.stringify([Object.values(logo.S).map(s=>[s.x,s.v]),logo.blinkT,logo.spinT]),forge:forge.t};});
   const a=await look();await page.waitForTimeout(1500);const b=await look();
   assert.notEqual(a.forge,b.forge,'Forge is working: the live figure moves');
   assert.equal(b.island,a.island,'the chat header’s figure does not move');

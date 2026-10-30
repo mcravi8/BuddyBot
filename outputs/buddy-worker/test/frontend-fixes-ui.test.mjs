@@ -13,13 +13,14 @@ test('sidebar hover, repaint, search, Back to chat, IME Enter, reset and escapin
    window.sent=0;BuddyDesktop={saveState:async()=>({saved:true}),sendMessage:async()=>{sent++;}};ui.view={kind:'chat',target:'id-atlas'};render();
   });
   await page.waitForTimeout(500);
-  // Hovering a row is noticed by the figures (the squash pop and attentive eyes depend on it).
-  const row=await page.locator('.chat-row[data-id=id-scout]').boundingBox();await page.mouse.move(row.x+80,row.y+row.height/2);await page.waitForTimeout(250);
-  assert.equal(await page.evaluate(()=>BuddyFigures.hovered()),'id-scout');
-  await page.mouse.move(700,400);await page.waitForTimeout(250);assert.equal(await page.evaluate(()=>BuddyFigures.hovered()),null);
-  // A rebuilt sidebar never shows its dot field blank, even for a single frame.
-  const blank=await page.evaluate(async()=>{let n=0;for(let i=0;i<15;i++){render();await new Promise(r=>requestAnimationFrame(r));const f=document.querySelector('canvas.sidebar-field'),d=f.getContext('2d').getImageData(0,0,f.width,f.height).data;let lit=0;for(let k=3;k<d.length;k+=4)if(d[k]>140)lit++;if(!lit)n++;}return n;});
-  assert.equal(blank,0,'the field is painted in the first frame after every render');
+  // Hovering a row shows it: the sidebar has no dot field to draw the highlight any more (29 Oct).
+  const scoutRow=page.locator('.chat-row[data-id=id-scout]'),row=await scoutRow.boundingBox(),bg=()=>scoutRow.evaluate(e=>getComputedStyle(e).backgroundColor);
+  const resting=await bg();await page.mouse.move(row.x+80,row.y+row.height/2);await page.waitForTimeout(250);
+  assert.notEqual(await bg(),resting,'the hovered row is highlighted');
+  await page.mouse.move(700,400);await page.waitForTimeout(250);assert.equal(await bg(),resting);
+  // A rebuilt sidebar never shows its figures blank, even for a single frame.
+  const blank=await page.evaluate(async()=>{let n=0;for(let i=0;i<15;i++){render();await new Promise(r=>requestAnimationFrame(r));for(const c of document.querySelectorAll('.chat-row canvas.agent-fig')){const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let lit=0;for(let k=3;k<d.length;k+=4)if(d[k]>140)lit++;if(!lit)n++;}}return n;});
+  assert.equal(blank,0,'every row’s figure is painted in the first frame after every render');
   // Typing in the sidebar search keeps the open chat where it was and does not rebuild the search box.
   await page.evaluate(()=>{const body=document.getElementById('chat-body');body.scrollTop=420;window.searchBox=document.getElementById('chat-search');});
   await page.locator('#chat-search').pressSequentially('No',{delay:30});

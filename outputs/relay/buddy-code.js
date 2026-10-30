@@ -132,12 +132,10 @@
     if(stepsOf(code).length&&!compare&&linked(code))return `<div class="code-actions"><button type="button" class="primary-button" data-code-act="compare" data-task="${id}"${off}>Compare with your folder</button>${view}</div>`;
     return view?`<div class="code-actions">${view}</div>`:'';
   }
-  // The lane colour of an agent: its figure's ink, in the theme shown.
+  // The lane colour of an agent: its figure's ink, the same in both themes as the figure itself.
   function agentColor(agent){
     const F=root.BuddyFigures,ink=F?.INK,id=agent&&F?.normColor?F.normColor(agent.avatarColor):'';
-    if(!ink||!ink[id])return 'var(--info)';
-    const dark=typeof document!=='undefined'&&(document.documentElement.dataset.theme==='dark'||!document.documentElement.dataset.theme&&root.matchMedia?.('(prefers-color-scheme: dark)')?.matches);
-    return ink[id][dark?1:0];
+    return ink&&ink[id]?ink[id][0]:'var(--info)';
   }
   // The chat's card for a coding task. `ctx`: names, agents (id → agent), busy, now.
   function card(receipt,job,ctx={}){

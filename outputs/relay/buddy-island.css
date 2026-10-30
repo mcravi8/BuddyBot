@@ -31,6 +31,3 @@
 @media(prefers-reduced-motion:reduce){
   .island-more,.island-toggle .icon{transition:none}
 }
-
-/* A row with an unread count keeps its snippet clear of the dot-matrix digits the field draws there. */
-.chat-row.field-unread .chat-snippet{padding-right:22px}

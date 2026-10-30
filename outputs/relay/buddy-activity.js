@@ -131,7 +131,7 @@
     const mine=i=>i.agentId===id||i.groupId===id||i.chatTarget===id||i.target===id;
     const need=list.filter(i=>i.kind==='needs'&&mine(i));
     if(need.length)return {kind:'needs',text:`Needs you · ${need[0].title}${need.length>1?` (+${need.length-1})`:''}`};
-    const work=list.find(i=>i.kind==='working'&&mine(i)),mood=window.BuddyFoldAgents?.current?.(id);
+    const work=list.find(i=>i.kind==='working'&&mine(i)),mood=window.BuddyAgentFigures?.current?.(id);
     if(work)return {kind:'working',text:`Working · ${work.title}`};
     if(mood==='talking')return {kind:'working',text:'Writing a reply…'};
     if(mood==='thinking')return {kind:'working',text:'Working…'};

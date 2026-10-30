@@ -128,17 +128,33 @@ test('removed grey migrates to the new blue while existing light blue and green 
   assert.equal(Team.colorOptions.find(c=>c.id==='mint').name,'Green');
 });
 
-test('the seven fold shapes replace the 3D shapes, and saved or suggested old names migrate',()=>{
-  assert.deepEqual(Team.shapeOptions.map(s=>s.id),['square','sphere','hex','pill','capsule','arch','diamond']);
-  assert.deepEqual(Team.shapeOptions.map(s=>s.name),['Square','Circle','Hex','Pill','Sideways pill','Arch','Diamond']);
-  assert.deepEqual(Team.legacyShape,{star:'diamond',pebble:'sphere',cube:'hex',clover:'pill'});
+test('four shapes from the 29 Oct figures, and every earlier shape name, saved or suggested, becomes one of them',()=>{
+  assert.deepEqual(Team.shapeOptions.map(s=>s.id),['square','sphere','hex','diamond']);
+  assert.deepEqual(Team.shapeOptions.map(s=>s.name),['Square','Circle','Hex','Diamond']);
+  assert.deepEqual(Team.legacyShape,{star:'diamond',pebble:'sphere',cube:'hex',clover:'sphere',pill:'sphere',capsule:'sphere',arch:'square'});
   for(const [old,now] of Object.entries(Team.legacyShape))assert.equal(Team.appearance({avatarShape:old,avatarColor:'mint'}).avatarShape,now);
   assert.equal(Team.appearance({avatarShape:'hexagon'}).avatarShape,'diamond','an unknown shape falls back instead of breaking the avatar');
-  assert.equal(Team.appearance({color:'scout'}).avatarShape,'pill');
-  const state=Team.migrate({agents:[{id:'a',name:'A',avatarShape:'cube',avatarColor:'rose'}],groups:[],proposals:[{suggested:{avatarShape:'clover'},draft:{avatarShape:'pebble'},approved:{avatarShape:'star'}}]});
-  assert.equal(state.agents[0].avatarShape,'hex');assert.equal(state.agents[0].avatarColor,'red');
-  assert.deepEqual(['suggested','draft','approved'].map(k=>state.proposals[0][k].avatarShape),['pill','sphere','diamond']);
+  assert.equal(Team.appearance({color:'scout'}).avatarShape,'sphere');
+  const state=Team.migrate({agents:[{id:'a',name:'A',avatarShape:'cube',avatarColor:'rose'},{id:'b',name:'B',avatarShape:'arch',avatarColor:'gold'}],groups:[],proposals:[{suggested:{avatarShape:'clover'},draft:{avatarShape:'capsule'},approved:{avatarShape:'star'}}]});
+  assert.equal(state.agents[0].avatarShape,'hex');assert.equal(state.agents[0].avatarColor,'red');assert.equal(state.agents[1].avatarShape,'square');
+  assert.deepEqual(['suggested','draft','approved'].map(k=>state.proposals[0][k].avatarShape),['sphere','sphere','diamond']);
+  assert.ok(!('avatarEyes' in state.agents[0]),'loading adds no eyes: they come from the role');
   assert.deepEqual(Team.migrate(Team.copy(state)),state,'migrating twice changes nothing');
+});
+
+test('eyes come from the first role word Buddy recognises, unless the person picked them',()=>{
+  assert.equal(Team.eyeOptions.length,14);assert.equal(Team.eyeOptions[0].id,'default');
+  const roles={'Chief of Staff & Agent Operations Lead':'chief','Inbox Monitor (AgentMail + Gmail)':'scout','Research Lead (question, literature, framing)':'research',
+    'Quant Engineer (pipeline & reproducibility)':'math','Validator (skeptic & findings log)':'reviewer','Team lead':'chief','UX designer':'designer','Writing partner':'writer',
+    'Customer support':'support','Sales outreach':'networker','Math tutor':'math','Data analyst':'analyst','Brainstorm buddy':'creative','Developer':'dev','Getting started':'default','':'default'};
+  for(const [role,eyes] of Object.entries(roles))assert.equal(Team.eyesForRole(role),eyes,role);
+  assert.equal(Team.eyesOf({role:'Developer'}),'dev');assert.equal(Team.eyesOf({role:'Developer',avatarEyes:'coach'}),'coach','a pick wins over the role');
+  assert.equal(Team.eyesOf({role:'Developer',avatarEyes:'laser'}),'dev','an unknown pick falls back to the role');
+  const state=workspace(),made=Team.createAgent(state,{...settings,name:'Eyes',avatarEyes:'scout'});
+  assert.equal(made.avatarEyes,'scout');
+  Team.updateAgent(state,made.id,{...settings,name:'Eyes',avatarEyes:''});
+  assert.ok(!('avatarEyes' in made),'choosing eyes from the role again forgets the pick');
+  assert.ok(!('avatarEyes' in Team.createAgent(state,{...settings,name:'Plain'})),'no pick, nothing saved');
 });
 
 test('seven colours carry a light ink, a dark ink and an author-name colour, and the figures draw the same inks',()=>{

@@ -141,16 +141,40 @@ function agentIsThinking(target){const run=BuddyChat.active(state,target)||Buddy
 const who=(agentId,label)=>`<span class="who">${findAgent(agentId)?avatar(agentId,true):''}<span>${esc(label??agentName(agentId))}</span></span>`;
 const avatar=(agentId,small=false)=>{const a=findAgent(agentId);return a?configuredAvatar(a,small,a.name):`<span class="avatar user ${small?'small':''}">Y</span>`;};
 const swatchInk = hex => { const [r,g,b]=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255); return .2126*r+.7152*g+.0722*b>.5?'#141414':'#ffffff'; };
-function avatarPicker(value={}) {
-  const c=RelayTeam.config(value);
-  return `<div class="config-preview"><span id="config-avatar-preview">${configuredAvatar(c)}</span><span><strong id="config-preview-name">${esc(c.name||'Your new agent')}</strong><small>One shape. Any personality.</small></span></div><fieldset class="appearance-field"><legend>Shape</legend><div class="shape-picker">${RelayTeam.shapeOptions.map(s=>`<label class="shape-choice"><input type="radio" name="avatar-shape" value="${s.id}" ${c.avatarShape===s.id?'checked':''} aria-label="${s.name} shape"><span><span data-shape-preview="${s.id}">${BuddyFigures.avatarHTML({avatarShape:s.id,avatarColor:c.avatarColor},48)}</span><small>${s.name}</small></span></label>`).join('')}</div></fieldset><fieldset class="appearance-field color-field"><legend>Color</legend><div class="color-picker">${RelayTeam.colorOptions.map(color=>`<label class="color-choice" title="${color.name}"><input type="radio" name="avatar-color" value="${color.id}" ${c.avatarColor===color.id?'checked':''} aria-label="${color.name} color"><span style="--swatch:${color.ink};--swatch-dark:${color.inkDark};--swatch-ink:${swatchInk(color.ink)};--swatch-ink-dark:${swatchInk(color.inkDark)}">${icon('check')}</span></label>`).join('')}</div></fieldset>`;
+// The figure being made or changed, large, reacting to the choices (buddy-agent-figures.js: data-agent-sim="preview").
+const previewAvatar=value=>configuredAvatar(value).replace('data-fig-id="fig:preview"','data-fig-id="fig:preview" data-agent-sim="preview"');
+const eyeName=id=>RelayTeam.eyeOptions.find(e=>e.id===id)?.name||'Default';
+// What the eyes are: picked, from the role, or (for a new agent, which learns its job in chat) the default until then.
+function eyesNote(c,creating){
+  if(c.avatarEyes)return `${eyeName(c.avatarEyes)} eyes, your choice`;
+  if(creating)return c.name?`Default eyes until ${c.name} learns the job`:'Default eyes until they learn the job';
+  return `${eyeName(RelayTeam.eyesForRole(c.role))} eyes, from the role`;
 }
-// Shape tiles and the preview are live canvases: recolour them in place and give the figure a little hop.
-function refreshAvatarPreview(form,value) {
-  document.getElementById('config-avatar-preview').innerHTML=configuredAvatar(value);
-  const c=RelayTeam.appearance(value);
-  for(const tile of form.querySelectorAll('[data-shape-preview]')){const canvas=tile.querySelector('canvas');if(canvas)canvas.dataset.color=c.avatarColor;}
-  BuddyFigures.poke();
+function avatarPicker(value={},{creating=false}={}) {
+  const c=RelayTeam.config(value),eyes=RelayTeam.eyesOf(c),chosen=!!c.avatarEyes;
+  const from=creating?'From the job, once they learn it.':`From the role: ${eyeName(RelayTeam.eyesForRole(c.role))}.`;
+  return `<div class="config-preview"><span id="config-avatar-preview">${previewAvatar(c)}</span><span><strong id="config-preview-name">${esc(c.name||'Your new agent')}</strong><small id="config-preview-eyes">${esc(eyesNote(c,creating))}</small></span></div><fieldset class="appearance-field"><legend>Shape</legend><div class="shape-picker">${RelayTeam.shapeOptions.map(s=>`<label class="shape-choice"><input type="radio" name="avatar-shape" value="${s.id}" ${c.avatarShape===s.id?'checked':''} aria-label="${s.name} shape"><span><span data-shape-preview="${s.id}">${BuddyFigures.avatarHTML({avatarShape:s.id,avatarColor:c.avatarColor,avatarEyes:eyes},48)}</span><small>${s.name}</small></span></label>`).join('')}</div></fieldset><fieldset class="appearance-field color-field"><legend>Color</legend><div class="color-picker">${RelayTeam.colorOptions.map(color=>`<label class="color-choice" title="${color.name}"><input type="radio" name="avatar-color" value="${color.id}" ${c.avatarColor===color.id?'checked':''} aria-label="${color.name} color"><span style="--swatch:${color.ink};--swatch-dark:${color.ink};--swatch-ink:${swatchInk(color.ink)};--swatch-ink-dark:${swatchInk(color.ink)}">${icon('check')}</span></label>`).join('')}</div></fieldset><fieldset class="appearance-field eyes-field"><legend>Eyes</legend><p class="eyes-from"><span id="config-eyes-from">${esc(from)}</span>${creating?` <button type="button" class="small-link" data-eyes-toggle aria-expanded="${chosen}">${chosen?'Hide':'Choose now'}</button>`:''}</p><div class="eye-picker" ${creating&&!chosen?'hidden':''}><label class="eye-choice eye-from"><input type="radio" name="avatar-eyes" value="" ${chosen?'':'checked'} aria-label="${creating?'Eyes from the job':'Eyes from the role'}"><span><small>${creating?'From the job':'From the role'}</small></span></label>${RelayTeam.eyeOptions.map(e=>`<label class="eye-choice" title="${e.name}"><input type="radio" name="avatar-eyes" value="${e.id}" ${c.avatarEyes===e.id?'checked':''} aria-label="${e.name} eyes"><span data-eye-preview="${e.id}">${BuddyFigures.avatarHTML({avatarShape:c.avatarShape,avatarColor:c.avatarColor,avatarEyes:e.id},40)}</span></label>`).join('')}</div></fieldset>`;
+}
+// The preview answers what changed: a new shape turns it to show its side, a new colour makes it hop, typing the name makes it look down at
+// it, and new eyes arrive with its finish. The small figures in the pickers follow the colour, shape and eyes chosen.
+function refreshAvatarPreview(form,value,kind) {
+  const c=RelayTeam.config(value),eyes=RelayTeam.eyesOf(c),creating=!!form.querySelector('[data-eyes-toggle]');
+  document.getElementById('config-avatar-preview').innerHTML=previewAvatar(c);
+  for(const canvas of form.querySelectorAll('[data-shape-preview] canvas')){canvas.dataset.agentColor=c.avatarColor;canvas.dataset.agentEyes=eyes;}
+  for(const canvas of form.querySelectorAll('[data-eye-preview] canvas')){canvas.dataset.agentShape=c.avatarShape;canvas.dataset.agentColor=c.avatarColor;}
+  const note=document.getElementById('config-preview-eyes');if(note)note.textContent=eyesNote(c,creating);
+  const from=document.getElementById('config-eyes-from');if(from&&!creating)from.textContent=`From the role: ${eyeName(RelayTeam.eyesForRole(c.role))}.`;
+  if(kind)window.BuddyAgentFigures?.poke(kind);
+}
+// Which choice an input event was: the preview reacts to it (refreshAvatarPreview).
+const pickedKind=target=>target?.name==='avatar-shape'?'shape':target?.name==='avatar-color'?'color':/-name$/.test(target?.id||'')?'name':'';
+function bindEyes(form,update){
+  form.querySelector('[data-eyes-toggle]')?.addEventListener('click',event=>{
+    const picker=form.querySelector('.eye-picker'),open=picker.hidden;picker.hidden=!open;
+    event.currentTarget.setAttribute('aria-expanded',String(open));event.currentTarget.textContent=open?'Hide':'Choose now';
+    // Hiding the eyes goes back to eyes from the job.
+    if(!open){const from=form.querySelector('[name=avatar-eyes][value=""]');if(from&&!from.checked){from.checked=true;update();}}
+  });
 }
 function configFields(value,prefix,{groups=false}={}) {
   const c=RelayTeam.config(value);
@@ -163,27 +187,32 @@ function readConfig(prefix) {
     description:document.getElementById(`${prefix}-description`).value,
     avatarShape:document.querySelector('[name=avatar-shape]:checked')?.value,
     avatarColor:document.querySelector('[name=avatar-color]:checked')?.value,
+    avatarEyes:document.querySelector('[name=avatar-eyes]:checked')?.value||'',
     tools:{web:document.getElementById(`${prefix}-web`).checked,projectFiles:document.getElementById(`${prefix}-files`).checked,desktop:document.getElementById(`${prefix}-desktop`).checked},
     groupIds:[...document.querySelectorAll('[name=config-group]:checked')].map(input=>input.value)
   };
 }
 function bindConfig(prefix) {
-  const update=()=>{
+  const form=document.getElementById(`${prefix}-name`).form;
+  const update=event=>{
     const c=readConfig(prefix);
-    refreshAvatarPreview(document.getElementById(`${prefix}-name`).form,c);
+    refreshAvatarPreview(form,c,pickedKind(event?.target));
     document.getElementById('config-preview-name').textContent=c.name.trim()||'Your new agent';
   };
-  for(const input of document.querySelectorAll('[name=avatar-shape],[name=avatar-color]'))input.addEventListener('change',update);
+  for(const input of document.querySelectorAll('[name=avatar-shape],[name=avatar-color],[name=avatar-eyes]'))input.addEventListener('change',update);
   document.getElementById(`${prefix}-name`).addEventListener('input',update);
+  document.getElementById(`${prefix}-role`)?.addEventListener('input',update);
+  window.BuddyAgentFigures?.poke('open');
 }
 function newAgent(templateId) {
   const template=findAgent(templateId),c=template?RelayTeam.config(template):{avatarShape:'diamond',avatarColor:'lilac'};
   c.name='';if(template)c.avatarColor=template.avatarColor==='red'?'lilac':'red';
-  openModal(template?'Create a similar agent':'Create an agent',`<p class="modal-description">Give them a name and a look. They'll ask about their job in chat.</p><form id="agent-form" class="agent-config-form">${avatarPicker(c)}<div class="field"><label for="agent-name">Name</label><input id="agent-name" maxlength="40" required autocomplete="off" placeholder="What should we call them?"></div><p class="field-error" id="agent-error" role="alert"></p>${formActions('Start chatting')}</form>`);
+  openModal(template?'Create a similar agent':'Create an agent',`<p class="modal-description">Give them a name and a look. They'll ask about their job in chat.</p><form id="agent-form" class="agent-config-form">${avatarPicker(c,{creating:true})}<div class="field"><label for="agent-name">Name</label><input id="agent-name" maxlength="40" required autocomplete="off" placeholder="What should we call them?"></div><p class="field-error" id="agent-error" role="alert"></p>${formActions('Start chatting')}</form>`);
   const form=document.getElementById('agent-form');
-  const read=()=>({name:document.getElementById('agent-name').value,role:'Getting started',description:BuddyAgentSetup.bootstrap,avatarShape:document.querySelector('[name=avatar-shape]:checked')?.value,avatarColor:document.querySelector('[name=avatar-color]:checked')?.value,tools:{web:true,projectFiles:true,desktop:true},groupIds:[]});
-  const update=()=>{const value=read();refreshAvatarPreview(form,value);document.getElementById('config-preview-name').textContent=value.name.trim()||'Your new agent';};
-  form.addEventListener('input',update);form.addEventListener('change',update);
+  const read=()=>({name:document.getElementById('agent-name').value,role:'Getting started',description:BuddyAgentSetup.bootstrap,avatarShape:document.querySelector('[name=avatar-shape]:checked')?.value,avatarColor:document.querySelector('[name=avatar-color]:checked')?.value,avatarEyes:document.querySelector('[name=avatar-eyes]:checked')?.value||'',tools:{web:true,projectFiles:true,desktop:true},groupIds:[]});
+  // A new agent's role is "Getting started" until it learns its job, so its eyes are the default until then.
+  const update=event=>{const value=read();refreshAvatarPreview(form,{...value,role:''},pickedKind(event?.target));document.getElementById('config-preview-name').textContent=value.name.trim()||'Your new agent';};
+  form.addEventListener('input',update);form.addEventListener('change',update);bindEyes(form,update);window.BuddyAgentFigures?.poke('open');
   form.addEventListener('submit',async event=>{
     event.preventDefault();const button=form.querySelector('[type=submit]');if(button.disabled)return;
     try {
@@ -332,7 +361,7 @@ function sidebar() {
   const entries=[...state.agents.map(a=>({...a,isGroup:false})),...state.groups.map(g=>({...g,isGroup:true}))];
   const query=ui.chatFilter.toLowerCase().trim();
   const filtered=entries.filter(x=>`${x.name} ${x.role||''}`.toLowerCase().includes(query));
-  return `<aside class="sidebar ${ui.mobile?'mobile-open':''}" aria-label="Chats">${BuddyFigures.fieldHTML()}
+  return `<aside class="sidebar ${ui.mobile?'mobile-open':''}" aria-label="Chats">
     <header class="sidebar-header"><div class="buddy-brand">${BuddyFigures.slotHTML('logo','',44,'logo')}<h2>Buddy</h2></div><div class="sidebar-header-actions">${window.BuddyActivity?.nav()||''}${pendingSuggestionCount()?`<button class="icon-button pending-suggestions-button" data-action="proposals" aria-label="Review ${pendingSuggestionCount()} agent suggestions" title="Agent suggestions">${icon('people')}<span>${pendingSuggestionCount()}</span></button>`:''}<button class="icon-button" data-action="new-chat" aria-label="New chat" title="New chat">${icon('plus')}</button><button type="button" class="icon-button sidebar-layout-toggle" data-action="sidebar-layout" aria-label="${state.sidebarCompact===true?'Expand sidebar':'Compact sidebar'}" title="${state.sidebarCompact===true?'Expand sidebar':'Compact sidebar'}" aria-pressed="${state.sidebarCompact===true}">${icon(state.sidebarCompact===true?'sidebar-expand':'sidebar-collapse')}</button><button class="icon-button mobile-sidebar-close" data-action="menu" aria-label="Close chats">${icon('close')}</button></div></header>
     <label class="chat-search">${icon('search')}<input id="chat-search" aria-label="Search chats" placeholder="Search" value="${esc(ui.chatFilter)}" autocomplete="off"></label>
     <button type="button" class="icon-button compact-chat-search" data-action="expand-chat-search" aria-label="Search chats" title="Expand sidebar to search">${icon('search')}</button>
