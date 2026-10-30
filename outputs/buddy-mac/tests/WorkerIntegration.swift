@@ -442,13 +442,20 @@ sys.stdout.write('GOT:'+data.decode('utf-8','replace'))
         require(peek["code"] as? String == "not_authorized" && peek["task"] == nil && poke["code"] as? String == "not_authorized", "a teammate who neither supervises nor manages Forge may not read or continue its task: \(peek) \(poke)")
         let seen = try await raw(["operation": "coding", "agentId": lead, "requestId": "look", "arguments": ["action": "status", "taskId": stuckID]])["task"] as? [String: Any] ?? [:]
         require(seen["id"] as? String == stuckID && seen["stopCause"] as? String == "stall", "the supervisor reads the teammate's task: \(seen["stopCause"] ?? "-")")
+        // Its project has files but no history, as a task from before the Code view has: the next attempt begins with them, as Buddy's step.
+        let stuckFiles = support.appendingPathComponent("Worker/Tasks/" + stuckID + "/Files")
+        try FileManager.default.createDirectory(at: stuckFiles.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try Data("print('earlier')\n".utf8).write(to: stuckFiles.appendingPathComponent("src/main.py")); try Data("notes\n".utf8).write(to: stuckFiles.appendingPathComponent("notes.md"))
         let pushed = try await raw(["operation": "coding", "agentId": lead, "requestId": "push", "arguments": ["action": "continue", "taskId": stuckID, "goal": "SUPERVISOR_CONTINUE: carry on from the saved files."]])
         require(pushed["error"] == nil && (pushed["task"] as? [String: Any])?["status"] as? String == "queued", "the supervisor continues it: \(pushed)")
         let carriedOn = try await pollAs(forge, stuckID, "the continued task finishes") { $0["status"] as? String == "completed" }
         require(carriedOn["attempt"] as? Int == 2 && (carriedOn["updates"] as? [String])?.last?.hasPrefix("[From Lead, your supervisor] ") == true, "it carried on in a second attempt, told who asked: \(carriedOn["attempt"] ?? "") \(carriedOn["updates"] ?? "")")
+        let begun = carriedOn["code"] as? [String: Any] ?? [:], begunSteps = begun["steps"] as? [[String: Any]] ?? []
+        require(begunSteps.map { "\($0["kind"] ?? "")/\($0["author"] ?? "")/\($0["message"] ?? "")" } == ["start/buddy/2 files from earlier work"] && (begun["files"] as? [[String: Any]] ?? []).isEmpty,
+                "the history begins with the files from before, by Buddy, and none of them count as the agent's change: \(begunSteps.map { $0["message"] ?? "" }) \(begun["files"] ?? "")")
         let skip = try await raw(["operation": "coding", "agentId": lead, "requestId": "skip", "arguments": ["action": "continue", "taskId": askID, "goal": "Never mind the question."]])
         require(skip["code"] as? String == "not_authorized", "a task waiting for an answer is not continued by someone else: \(skip)")
-        print("PASS: the supervisor reads and continues a teammate's technically stopped task; a non-manager is refused with not_authorized")
+        print("PASS: the supervisor reads and continues a teammate's technically stopped task; a non-manager is refused with not_authorized; files from before are where its history begins")
 
         // 5. The pulse: who is working right now, and since when nothing is.
         let pulseID = try await startAs(vera, "SLOW_FIXTURE: a slow build", "pulse")

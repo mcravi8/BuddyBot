@@ -90,6 +90,25 @@ import Foundation
         _ = try history.save(nil, author: forge)
         require(!(try history.changes()).contains { $0["path"] as? String == "data.bin" }, "a file over the size limit stays out of the history")
 
+        // A task from before the Code view: what its project already holds is Buddy's starting step, and only what changes after is the agent's.
+        let earlier = root.appendingPathComponent("Tasks/T2/Files", isDirectory: true), resumed = BuddyCodeHistory(project: earlier)
+        require(try BuddyCodeHistory(project: root.appendingPathComponent("Tasks/T3/Files", isDirectory: true)).begin() == nil, "a project that isn't there has nothing to begin with")
+        try fm.createDirectory(at: earlier, withIntermediateDirectories: true)
+        require(try resumed.begin() == nil && !resumed.hasSteps, "an empty project begins with nothing")
+        try put(earlier, "main.py", "import csv\nprint('hi')\n"); try put(earlier, "lib/dates.py", "def parse(s):\n    return s\n"); try put(earlier, "notes.md", "old notes\n")
+        let start = try resumed.begin()
+        require(start?["kind"] as? String == "start" && start?["author"] as? String == "buddy" && start?["message"] as? String == "3 files from earlier work" && resumed.startHash() != nil, "the files already there are Buddy's starting step: \(start ?? [:])")
+        require(try resumed.changes().isEmpty && (try resumed.begin()) == nil, "nothing has changed yet, and a history begins once")
+        try put(earlier, "lib/dates.py", "def parse(s):\n    return s.strip()\n"); try put(earlier, "tests/test_dates.py", "assert True\n"); try fm.removeItem(at: earlier.appendingPathComponent("notes.md"))
+        _ = try resumed.save("Fixed the date parsing", author: forge)
+        let after = Dictionary(uniqueKeysWithValues: try resumed.changes().map { ($0["path"] as? String ?? "", $0) })
+        require(after.keys.sorted() == ["lib/dates.py", "notes.md", "tests/test_dates.py"] && after["lib/dates.py"]?["status"] as? String == "changed" && after["lib/dates.py"]?["added"] as? Int == 1
+                && after["tests/test_dates.py"]?["status"] as? String == "new" && after["notes.md"]?["status"] as? String == "removed", "changed, new and removed against where it began: \(after)")
+        require(((try resumed.diff("lib/dates.py"))["rows"] as? [[String: Any]] ?? []).filter { $0["kind"] as? String != "hunk" && $0["kind"] as? String != "ctx" }.map { $0["kind"] as? String ?? "" } == ["del", "add"], "a file's change is against where it began")
+        found = try resumed.compare(agentName: "Forge", read: read)
+        require((found["bring"] as? [[String: Any]] ?? []).isEmpty && found["folderId"] as? String == "" && found["ready"] as? Bool == false, "with no folder it came from, nothing is offered to bring in: \(found)")
+        require(BuddyCodeHistory(project: project).startHash() == nil, "a history that began with a copy has no starting step")
+
         // Checks come from the commands, newest of each kind, with counts where the tool prints them.
         let checks = BuddyCodeChecks.read([
             ["id": "1", "code": "npx vitest run", "status": "completed", "exitCode": 1, "output": "Tests  2 failed | 16 passed (18)", "durationMs": 6200],
@@ -109,7 +128,7 @@ import Foundation
             require(n?.passed == passed && n?.failed == failed, "test counts from “\(output)”: \(String(describing: n))")
         }
         require(BuddyCodeChecks.kind("cd web && npm run build") == "build" && BuddyCodeChecks.kind("python3 -m pytest -q") == "test" && BuddyCodeChecks.kind("cat notes.md") == nil, "commands are recognized by what they run")
-        print("PASS: a coding task keeps its history beside its project, saves steps with lines and notes, shows a file's change, compares with the person's folder (as it is, combined or clashing), brings in only what was chosen, marks clashes for the agent, and reads checks from its commands")
+        print("PASS: a coding task keeps its history beside its project, saves steps with lines and notes, shows a file's change, compares with the person's folder (as it is, combined or clashing), brings in only what was chosen, marks clashes for the agent, begins a task from before with its earlier work, and reads checks from its commands")
     }
 }
 extension URL {

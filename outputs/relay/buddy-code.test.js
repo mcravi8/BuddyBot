@@ -91,6 +91,22 @@ test('the Code tab lists the copies, their progress and history, what changed, o
   assert.match(Code.tab([],ctx),/No coding work in this chat yet/);
 });
 
+test('a task from before the Code view begins with its earlier work; a project not from your folders offers no compare',()=>{
+  const resumed=job({},{folderId:undefined,folderName:undefined,compare:{head:'c7',folderId:'',bring:[],clashes:[],combined:[],ready:false},head:'c7',
+    steps:[{hash:'c7',author:'forge',kind:'step',message:'Fixed the date parsing',at:ago(2),fileCount:1},{hash:'c6',author:'buddy',kind:'start',message:'42 files from earlier work',at:ago(9),fileCount:42}]});
+  const rows=Code.laneRows(resumed,{names,now:NOW,agentName:'Forge'});
+  assert.deepEqual(rows.map(r=>`${r.lane}/${r.kind}/${r.text}`),['agent/step/Fixed the date parsing','you/base/Forge began with 42 files from earlier work'],'the earlier files are where it began, not the agent\'s step');
+  const s=Code.stops(resumed,NOW);
+  assert.deepEqual(s.states,['done','done','next','done','next']);assert.equal(s.details[0],'42 files from earlier work');assert.equal(s.details[1],'1 step saved','only the new step is the agent\'s');
+  assert.equal(s.details[2],'Not from one of your folders','no folder to compare with, so no “Nothing clashes”');
+  let html=Code.card({id:'w1'},resumed,ctx);
+  assert.match(html,/Forge’s project · 3 files/);assert.doesNotMatch(html,/copy of your folder/);assert.match(html,/>Done</);assert.doesNotMatch(html,/data-code-act/,'nothing to compare or bring in');
+  html=Code.card({id:'w1'},{...resumed,code:{...resumed.code,compare:null}},ctx);assert.doesNotMatch(html,/Compare with your folder/);
+  // Copied in after it began: the copy is a step, the beginning stays the earlier work.
+  const both=job({},{steps:[{hash:'c8',author:'buddy',kind:'copy',message:'Copied 2 files from data',at:ago(1),fileCount:2},...resumed.code.steps]});
+  assert.equal(Code.laneRows(both,{names,now:NOW,agentName:'Forge'}).filter(r=>r.kind==='base').map(r=>r.text).join(),'Forge began with 42 files from earlier work');
+});
+
 test('every word from the task is drawn as text',()=>{
   const bad=job({title:evil},{folderName:evil,steps:[{hash:'a',author:'forge',kind:'step',message:evil,at:ago(1),fileCount:1},{hash:'b',author:'buddy',kind:'copy',message:'Copied 1 file from '+evil,at:ago(2)}],files:[{path:evil,status:'new',added:1,removed:0,note:evil}],checks:[{kind:'test',label:evil,ok:true,summary:evil}]});
   const html=Code.card({id:'w1',title:evil},bad,ctx)+Code.tab([bad],ctx);

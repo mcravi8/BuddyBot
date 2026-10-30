@@ -152,6 +152,23 @@ struct BuddyCodeHistory {
         try saveSources(all)
         return step
     }
+    /// Files already in the project when its history begins (a task from before the Code view, or an attempt that ended before its changes
+    /// were saved): Buddy's first step, so what was there counts as where the copy started and only what changes from here is the agent's.
+    @discardableResult
+    func begin() throws -> [String: Any]? {
+        guard !hasSteps, FileManager.default.fileExists(atPath: project.path) else { return nil }
+        try ensure()
+        try git(["add", "-A", "--", "."])
+        let count = try text(["diff", "--cached", "--name-only", "--no-renames"]).split(separator: "\n").count
+        guard count > 0 else { return nil }
+        return try save("\(count == 1 ? "1 file" : "\(count) files") from earlier work", author: Self.buddy, kind: "start")
+    }
+    /// The step `begin` saved, when the history began with files already there.
+    func startHash() -> String? {
+        guard hasSteps, let roots = try? text(["log", "--max-parents=0", "--format=%H%x1f%ae", "HEAD"]), let root = roots.split(separator: "\n").last else { return nil }
+        let f = root.split(separator: "\u{1f}").map(String.init)
+        return f.count == 2 && f[1].hasSuffix("+start@buddy.local") ? f[0] : nil
+    }
     func headHash() throws -> String { try text(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines) }
     /// A file as it was at a step, or nil when it wasn't there.
     func content(_ path: String, at commit: String) -> Data? {
@@ -159,7 +176,8 @@ struct BuddyCodeHistory {
         return shown.out
     }
 
-    /// Every file that differs from where it started (its copy for a copied file, nothing for a new one): new, changed or removed, with lines.
+    /// Every file that differs from where it started (its copy for a copied file, the files already there when the history began, else
+    /// nothing): new, changed or removed, with lines.
     func changes() throws -> [[String: Any]] {
         guard hasSteps else { return [] }
         let src = sources(), notes = notes()
@@ -182,9 +200,14 @@ struct BuddyCodeHistory {
                 out.append(row)
             }
         }
-        let fresh = tracked.filter { src[$0] == nil }.sorted().prefix(2000)
-        for (path, a, r) in try numstat(Self.emptyTree, Array(fresh)) {
-            var row: [String: Any] = ["path": path, "status": "new", "added": a ?? 0, "removed": r ?? 0, "binary": a == nil]
+        // The rest against where the copy started: the files already there (a changed one, or removed), or nothing (a new one).
+        let start = startHash()
+        let before = Set(try start.map { try text(["ls-tree", "-r", "--name-only", $0]).split(separator: "\n").map(String.init) } ?? [])
+        for line in try text(["diff", "--numstat", "--no-renames", start ?? Self.emptyTree, "HEAD"]).split(separator: "\n") {
+            let p = line.split(separator: "\t", maxSplits: 2).map(String.init)
+            guard p.count == 3, src[p[2]] == nil else { continue }
+            let path = p[2], a = Int(p[0]), r = Int(p[1])
+            var row: [String: Any] = ["path": path, "status": !tracked.contains(path) ? "removed" : before.contains(path) ? "changed" : "new", "added": a ?? 0, "removed": r ?? 0, "binary": a == nil]
             if let n = notes[path] { row["note"] = n }
             out.append(row)
         }
@@ -193,7 +216,7 @@ struct BuddyCodeHistory {
     /// One file's change from where it started: rows of hunk, ctx, add and del lines with their line numbers, at most `diffRows`.
     func diff(_ path: String) throws -> [String: Any] {
         guard hasSteps, !path.isEmpty, !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { throw Failure(message: "Choose a file from the list.") }
-        let base = sources()[path]?["commit"] as? String ?? Self.emptyTree
+        let base = sources()[path]?["commit"] as? String ?? startHash() ?? Self.emptyTree
         let raw = try text(["diff", "--no-color", "--no-renames", "-U3", base, "HEAD", "--", path])
         if raw.contains("\nBinary files ") || raw.hasPrefix("Binary files ") { return ["path": path, "binary": true, "rows": []] }
         var rows: [[String: Any]] = [], old = 0, new = 0, truncated = false

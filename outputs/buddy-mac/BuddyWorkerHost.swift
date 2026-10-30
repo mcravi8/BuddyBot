@@ -2503,6 +2503,7 @@ import Darwin
         runs[id] = run
         let runID = run.runID
         let folder = directory(job); try FileManager.default.createDirectory(at: project(job), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        codeBegin(job)
         // The model is settled once, at the start: a scheduled run takes its agent's current model, and that is what the attempt records and uses.
         let claudeModel: String? = job["provider"] as? String == "claude" ? modelForRun(job, agentID: agentID, workspace: workspace) : nil
         // The reason it last stopped no longer applies once a new attempt starts; a retry that was waiting is now under way.
@@ -2730,6 +2731,11 @@ import Darwin
         guard job["kind"] as? String=="coding",let id=job["id"] as? String else {return}
         let saved=(try? BuddyCodeHistory(project:project(job)).save(message,author:codeAuthor(job),notes:notes)) ?? nil
         if saved != nil || refresh || !notes.isEmpty {codeRefresh(id)}
+    }
+    /// An attempt on a project that has files but no history yet (a task from before the Code view): what is there is Buddy's starting step.
+    private func codeBegin(_ job:[String:Any]) {
+        guard job["kind"] as? String=="coding",let id=job["id"] as? String,(try? BuddyCodeHistory(project:project(job)).begin()) != nil else {return}
+        codeRefresh(id)
     }
     private func codeCopied(_ job:[String:Any],folderId:String,copied:[[String:Any]]) {
         guard job["kind"] as? String=="coding",let id=job["id"] as? String,!copied.isEmpty else {return}

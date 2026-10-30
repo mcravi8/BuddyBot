@@ -22,6 +22,10 @@
   // The compare still describes the copy as it is: made after the newest step.
   const freshCompare=code=>{const c=code?.compare;return c&&!c.stale&&(!code.head||!c.head||c.head===code.head)?c:null;};
   const broughtIn=code=>{const b=code?.broughtIn,c=freshCompare(code);return b&&(!c||(c.bring||[]).length===0)?b:null;};
+  // Where the copy began: its oldest copy from your folder, or the files already there when its history began (a task from before).
+  const began=steps=>{const i=steps.map(s=>s.kind==='copy'||s.kind==='start').lastIndexOf(true);return i<0?null:{i,step:steps[i]};};
+  // Its files came from one of your folders: only then is there something to compare with and bring into.
+  const linked=code=>!!code?.folderId;
 
   // ---- the lane graph: one lane per side, newest at the top; a copy curves out of your folder where it started and back in when brought in.
   // rows: {lane:'you'|'agent', kind: step|edit|base|next|in, text, meta, from (row of your edit taken in), clash (row it clashes with), clashing}
@@ -61,13 +65,13 @@
     return `<ol class="journey">${STOPS.map((label,i)=>`<li class="stop ${states[i]||'next'}"><span class="dot" aria-hidden="true"></span><b>${esc(label)}</b><small>${esc(details[i]||'')}</small></li>`).join('')}</ol>`;
   }
   function stops(job,now=Date.now()){
-    const code=codeOf(job)||{},steps=stepsOf(code),copies=steps.filter(s=>s.kind==='copy'),work=steps.filter(s=>!['copy','in','combine'].includes(s.kind)&&s.author!=='you');
+    const code=codeOf(job)||{},steps=stepsOf(code),work=steps.filter(s=>!['copy','start','in','combine'].includes(s.kind)&&s.author!=='you');
     const compare=freshCompare(code),checks=Array.isArray(code.checks)?code.checks:[],brought=broughtIn(code),busy=running(job);
     const clashes=(compare?.clashes||[]).length,failing=checks.filter(c=>c.ok===false),checking=checks.some(c=>c.ok==null);
-    const oldest=copies.at(-1);
-    const s=['done',busy?'now':work.length?'done':'next',busy||!compare?'next':clashes?'needs':'done',checking?'now':failing.length?'needs':checks.length?'done':'next',brought?'done':!busy&&compare&&compare.ready?'needs':'next'];
+    const oldest=began(steps)?.step,alone=!linked(code)&&!busy;
+    const s=['done',busy?'now':work.length?'done':'next',busy||!compare||alone?'next':clashes?'needs':'done',checking?'now':failing.length?'needs':checks.length?'done':'next',brought?'done':!busy&&compare&&compare.ready?'needs':'next'];
     const d=[oldest?`${short(oldest.message.replace(/^Copied /,''),36)}`:'Started empty',work.length?plural(work.length,'step')+' saved':busy?'Starting':'',
-      !compare?'':clashes?plural(clashes,'clash','clashes')+' with your edits':(compare.combined||[]).length?`Your edits combined in ${plural(compare.combined.length,'file')}`:'Nothing clashes',
+      alone?'Not from one of your folders':!compare?'':clashes?plural(clashes,'clash','clashes')+' with your edits':(compare.combined||[]).length?`Your edits combined in ${plural(compare.combined.length,'file')}`:'Nothing clashes',
       checking?'Running':failing.length?`${failing[0].label}: ${failing[0].summary}`:checks.length?(checks.every(c=>c.ok)?`All ${checks.length} pass`:''):'None run',
       brought?`${plural((brought.files||[]).length,'file')}, ${ago(brought.at,now)}`:!busy&&compare?.ready?'Your tap':''];
     return {states:s,details:d};
@@ -79,10 +83,10 @@
     const meta=s=>esc([who(s),ago(s.at,now),s.fileCount?plural(s.fileCount,'file'):''].filter(Boolean).join(' · '));
     if(!running(job)&&compare?.ready&&!brought)rows.push({lane:'you',kind:'next',text:`Next: bring into ${folder}`,meta:'Waits for your tap'});
     if(!running(job)&&(compare?.clashes||[]).length)rows.push({lane:'you',kind:'edit',clashing:true,text:`Your folder changed: ${plural(compare.clashes.length,'clash','clashes')}`,meta:esc(compare.clashes.slice(0,3).map(c=>base(c.to||c.path)).join(', '))});
-    const oldestCopy=steps.map(s=>s.kind).lastIndexOf('copy');
+    const start=began(steps)?.i;
     steps.forEach((s,i)=>{
       if(s.kind==='in')rows.push({lane:'you',kind:'in',text:s.message,meta:meta(s)});
-      else if(i===oldestCopy)rows.push({lane:'you',kind:'base',text:`${agentName} ${s.message.replace(/^Copied/,'copied')}`,meta:esc(ago(s.at,now))});
+      else if(i===start)rows.push({lane:'you',kind:'base',text:s.kind==='start'?`${agentName} began with ${s.message}`:`${agentName} ${s.message.replace(/^Copied/,'copied')}`,meta:esc(ago(s.at,now))});
       else if(s.kind==='combine'&&s.author==='you')rows.push({lane:'you',kind:'edit',text:s.message,meta:meta(s)});
       else rows.push({lane:'agent',kind:'step',text:s.message,meta:meta(s)});
     });
@@ -125,7 +129,7 @@
     }
     if(compare?.ready&&!broughtIn(code))return `<div class="code-actions"><button type="button" class="primary-button" data-code-act="bring" data-task="${id}"${off}>Bring into ${esc(folder)}</button><button type="button" class="border-button" data-code-act="compare" data-task="${id}"${off}>Compare again</button>${view}</div>`;
     if(broughtIn(code))return `<div class="code-actions"><button type="button" class="border-button" data-code-act="github" data-task="${id}"${off}>Send to GitHub</button>${tab?'':`<button type="button" class="border-button" data-chat-view="code">Open in Code</button>`}${view}</div>`;
-    if(stepsOf(code).length&&!compare)return `<div class="code-actions"><button type="button" class="primary-button" data-code-act="compare" data-task="${id}"${off}>Compare with your folder</button>${view}</div>`;
+    if(stepsOf(code).length&&!compare&&linked(code))return `<div class="code-actions"><button type="button" class="primary-button" data-code-act="compare" data-task="${id}"${off}>Compare with your folder</button>${view}</div>`;
     return view?`<div class="code-actions">${view}</div>`:'';
   }
   // The lane colour of an agent: its figure's ink, in the theme shown.
@@ -142,7 +146,7 @@
     const [label,tone]=status(job),mode=modes.get(job.id)||'lanes',now=ctx.now||Date.now();
     const visual=mode==='bar'?(()=>{const j=stops(job,now);return journey(j.states,j.details);})():lanes(laneRows(job,{names:ctx.names,now,agentName}),{agentColor:agentColor(agent),agentName,keyed:false});
     const toggle=`<div class="code-mode" role="group" aria-label="Show the work as"><button type="button" data-code-mode="lanes" data-task="${esc(job.id)}" aria-pressed="${mode==='lanes'}">Lane graph</button><button type="button" data-code-mode="bar" data-task="${esc(job.id)}" aria-pressed="${mode==='bar'}">Progress bar</button></div>`;
-    const sub=[`${agentName}’s copy of ${folder}`,code.fileCount?`${plural(code.fileCount,'file')}, ${Number(code.added)||0} lines added`:''].filter(Boolean).join(' · ');
+    const sub=[linked(code)?`${agentName}’s copy of ${folder}`:`${agentName}’s project`,code.fileCount?`${plural(code.fileCount,'file')}, ${Number(code.added)||0} lines added`:''].filter(Boolean).join(' · ');
     const live=running(job)&&String(job.progress||'').trim()?`<p class="wc-live" role="status"><span class="wc-ring" aria-hidden="true"></span><span>${esc(short(job.progress,140))}</span></p>`:'';
     return `<article class="plan-card work-card code-card tone-${tone}" data-code-card="${esc(job.id)}" data-work-task="${esc(job.id)}"><div class="wc-head"><div class="wc-head-text"><h3 class="wc-title">${esc(receipt?.title||job.title||'Coding task')}</h3><span class="wc-sub">${esc(sub)}</span></div><span class="wc-chip ${tone}">${esc(label)}</span></div>${toggle}${visual}${live}${clashHTML(job,agentName)}${checksHTML(code.checks)}${actionsHTML(job,{agentName,folder,busy:ctx.busy})}</article>`;
   }
@@ -176,7 +180,7 @@
     const files=Array.isArray(code.files)?code.files:[],selected=files.some(f=>f.path===picked.file)?picked.file:files[0]?.path||'';
     const copies=jobs.map(j=>{const [label,tone]=status(j),a=ctx.agents?.(j.agentId);return `<li><button type="button" class="code-copy" data-code-copy="${esc(j.id)}" aria-pressed="${j===job}"><span class="code-copy-name"><b>${esc(j.title||'Coding task')}</b><small>${esc(a?.name||'An agent')}’s copy · ${plural(stepsOf(codeOf(j)).length,'step')}</small></span><span class="wc-chip ${tone}">${esc(label)}</span></button></li>`;}).join('');
     const j=stops(job,now),note=files.find(f=>f.path===selected);
-    return `<div class="code-tab" data-code-tab="${esc(job.id)}"><div class="code-col"><section class="code-sec"><h3 class="code-label">Copies at work</h3><ul class="code-copies">${copies}</ul></section><section class="code-sec"><h3 class="code-label">Where it is <span>${esc(agentName)}’s copy of ${esc(folder)}</span></h3>${journey(j.states,j.details)}</section><section class="code-sec"><h3 class="code-label">History <span>newest at the top</span></h3>${lanes(laneRows(job,{names:ctx.names,now,agentName}),{agentColor:agentColor(agent),agentName,rh:46,gap:30})}</section></div><div class="code-col"><section class="code-sec"><h3 class="code-label">What changed <span>${plural(Number(code.fileCount)||0,'file')} · ${Number(code.added)||0} lines added, ${Number(code.removed)||0} removed</span></h3>${filesHTML(job,selected)}</section>${selected?`<section class="code-sec">${note?.note?`<p class="code-say"><b>${esc(base(selected))}.</b> ${esc(note.note)}</p>`:''}${diffHTML(job,selected)}</section>`:''}${(code.checks||[]).length?`<section class="code-sec"><h3 class="code-label">Checks</h3>${checksHTML(code.checks)}</section>`:''}${clashHTML(job,agentName)?`<section class="code-sec">${clashHTML(job,agentName)}</section>`:''}<div class="code-sec code-foot">${actionsHTML(job,{agentName,folder,busy:ctx.busy,tab:true})}</div></div></div>`;
+    return `<div class="code-tab" data-code-tab="${esc(job.id)}"><div class="code-col"><section class="code-sec"><h3 class="code-label">Copies at work</h3><ul class="code-copies">${copies}</ul></section><section class="code-sec"><h3 class="code-label">Where it is <span>${esc(linked(code)?`${agentName}’s copy of ${folder}`:`${agentName}’s project`)}</span></h3>${journey(j.states,j.details)}</section><section class="code-sec"><h3 class="code-label">History <span>newest at the top</span></h3>${lanes(laneRows(job,{names:ctx.names,now,agentName}),{agentColor:agentColor(agent),agentName,rh:46,gap:30})}</section></div><div class="code-col"><section class="code-sec"><h3 class="code-label">What changed <span>${plural(Number(code.fileCount)||0,'file')} · ${Number(code.added)||0} lines added, ${Number(code.removed)||0} removed</span></h3>${filesHTML(job,selected)}</section>${selected?`<section class="code-sec">${note?.note?`<p class="code-say"><b>${esc(base(selected))}.</b> ${esc(note.note)}</p>`:''}${diffHTML(job,selected)}</section>`:''}${(code.checks||[]).length?`<section class="code-sec"><h3 class="code-label">Checks</h3>${checksHTML(code.checks)}</section>`:''}${clashHTML(job,agentName)?`<section class="code-sec">${clashHTML(job,agentName)}</section>`:''}<div class="code-sec code-foot">${actionsHTML(job,{agentName,folder,busy:ctx.busy,tab:true})}</div></div></div>`;
   }
 
   // Per task: how the card draws the work, the person's clash choices; in the tab, the copy and file picked; changes read so far.
